@@ -1,0 +1,28 @@
+# 의존성 / 빌드 결과
+node_modules/
+dist/
+
+# 실행 중 생성되는 임시·상태 파일
+.cad_temp/
+.cad_agent_state.json
+*.zip
+
+# LibreDWG 실행 파일 (GPL-3.0). tests/download-libredwg.ps1 로 내려받아 bin/ 에 둔다
+bin/
+
+# 저작권이 있는 외부 도면과 그 파생 데이터는 저장소에 올리지 않는다
+# (자신의 DWG 파일을 samples/ 에 넣어 사용하세요)
+samples/*.dwg
+samples/*.dxf
+src/templates/acad_template.dxf
+
+# 테스트가 생성하는 결과물
+tests/*.dwg
+tests/*.dxf
+tests/main.json
+
+# 에디터 / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

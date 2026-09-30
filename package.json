@@ -1,0 +1,39 @@
+{
+  "name": "cad-platform",
+  "version": "1.0.0",
+  "description": "Agent-Operable Web CAD Viewer & Editor with DWG/DXF Support",
+  "license": "GPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node tests/test-cad-viewer.js && node tests/test-compat.js && node tests/test-parse-dxf-text.js && node tests/test-sample-main-com.js && node tests/test-dwg-content.js && node tests/test-api-parse-dwg.js",
+    "test:dxf": "node tests/test-parse-dxf-text.js",
+    "test:compat": "node tests/test-compat.js",
+    "test:sample": "node tests/test-sample-main-com.js",
+    "test:content": "node tests/test-dwg-content.js",
+    "test:api": "node tests/test-api-parse-dwg.js",
+    "cli": "node src/agent-cli.js"
+  },
+  "dependencies": {
+    "@mlightcad/libredwg-web": "^0.7.14",
+    "dxf-json": "^0.14.1",
+    "dxf-parser": "^1.1.2",
+    "dxf-writer": "^1.18.4",
+    "lucide-react": "^1.49.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.170.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
