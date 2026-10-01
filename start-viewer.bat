@@ -1,12 +1,24 @@
 @echo off
-rem Web CAD Studio 로컬 실행 (큰 DWG 파일은 이 방식으로만 열립니다)
-rem 이 창을 켜 둔 동안 브라우저에서 http://localhost:5173 으로 접속할 수 있습니다. 창을 닫으면 종료됩니다.
-rem 같은 Wi-Fi의 휴대폰에서는 아래에 표시되는 Network 주소(예: http://192.168.x.x:5173)로 접속하세요.
 chcp 65001 > nul
+title Web CAD Studio (server)
 cd /d "%~dp0"
+rem Web CAD Studio local run. Big DWG files open only with this server.
+rem Keep this window open while using http://localhost:5173 - closing the window stops the server.
+rem Phones on the same Wi-Fi: open the Network address shown below (http://192.168.x.x:5173).
+where node > nul 2>&1
+if errorlevel 1 (
+  echo [!] Node.js를 찾을 수 없습니다. https://nodejs.org 에서 Node.js 24 이상을 설치한 뒤 다시 실행하세요.
+  pause
+  exit /b 1
+)
 if not exist node_modules (
   echo 처음 실행이라 필요한 패키지를 설치합니다...
   call npm install
 )
+echo.
+echo 서버를 시작합니다. 잠시 후 브라우저가 열립니다. (열리지 않으면 http://localhost:5173 을 직접 입력하세요)
+echo.
 call npm run dev -- --open
+echo.
+echo 서버가 종료되었습니다. 위 메시지를 확인하세요.
 pause
