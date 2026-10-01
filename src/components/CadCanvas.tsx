@@ -25,6 +25,8 @@ interface CadCanvasProps {
   gridEnabled?: boolean;
   theme?: 'DARK' | 'LIGHT';
   zoomTrigger?: number;
+  /** 화면 버튼(모바일)으로 우클릭과 같은 '완료/취소' 동작을 요청한다. id가 바뀔 때마다 한 번 실행 */
+  commandSignal?: { id: number };
   onMeasureComplete?: (result: MeasureResult) => void;
   onAreaComplete?: (result: AreaResult) => void;
   onSelectEntity?: (entity: CadEntity | null) => void;
@@ -173,6 +175,7 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
   gridEnabled = true,
   theme = 'DARK',
   zoomTrigger,
+  commandSignal,
   onMeasureComplete,
   onAreaComplete,
   onSelectEntity,
@@ -194,6 +197,17 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const isMovingRef = useRef<boolean>(false);
   const moveStartRef = useRef<Point2D>({ x: 0, y: 0 });
+  // 터치 조작용 상태 (손가락 위치, 두 손가락 간격, 드래그 여부)
+  const touchRef = useRef<{ pts: { x: number; y: number }[]; dist: number; moved: boolean; moving: boolean }>({
+    pts: [], dist: 0, moved: false, moving: false
+  });
+  const lastAspectRef = useRef<number>(0);
+  const zoomExtentsRef = useRef<() => void>(() => {});
+  const lastTouchTimeRef = useRef<number>(0);
+  const suppressClickRef = useRef<boolean>(false);
+  // 터치 리스너(한 번만 등록)에서 최신 값을 읽기 위한 참조
+  const modeRef = useRef<CadToolMode>(mode);
+  const selectedIdRef = useRef<string | null>(null);
 
   // Three.js 그룹
   const entityGroupRef = useRef<THREE.Group>(new THREE.Group());
@@ -511,6 +525,7 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
     sceneRef.current = scene;
 
     const aspect = width / height;
+    lastAspectRef.current = aspect;
     const frustumSize = 250;
     const camera = new THREE.OrthographicCamera(
       (-frustumSize * aspect) / 2,
@@ -526,7 +541,7 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 휴대폰의 매우 높은 해상도에서 느려지지 않도록 제한
     rendererRef.current = renderer;
 
     containerRef.current.appendChild(renderer.domElement);
@@ -564,18 +579,35 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
       const h = containerRef.current.clientHeight;
       if (w === 0 || h === 0) return;
       const asp = w / h;
-      cameraRef.current.left = (-frustumSize * asp) / 2;
-      cameraRef.current.right = (frustumSize * asp) / 2;
-      cameraRef.current.top = frustumSize / 2;
-      cameraRef.current.bottom = -frustumSize / 2;
+      // 휴대폰을 돌려 가로세로 비율이 크게 바뀌면 도면 전체가 화면에 맞도록 다시 맞춘다
+      if (lastAspectRef.current && Math.abs(asp / lastAspectRef.current - 1) > 0.25) {
+        lastAspectRef.current = asp;
+        rendererRef.current.setSize(w, h);
+        cameraRef.current.left = (-(cameraRef.current.top - cameraRef.current.bottom) * asp) / 2;
+        cameraRef.current.right = ((cameraRef.current.top - cameraRef.current.bottom) * asp) / 2;
+        cameraRef.current.updateProjectionMatrix();
+        zoomExtentsRef.current();
+        return;
+      }
+      lastAspectRef.current = asp;
+      // 화면 크기가 바뀌어도(패널 열림 등) 현재 보고 있는 세로 범위를 유지하고 가로만 맞춘다
+      const viewH = cameraRef.current.top - cameraRef.current.bottom || frustumSize;
+      cameraRef.current.left = (-viewH * asp) / 2;
+      cameraRef.current.right = (viewH * asp) / 2;
+      cameraRef.current.top = viewH / 2;
+      cameraRef.current.bottom = -viewH / 2;
       cameraRef.current.updateProjectionMatrix();
       rendererRef.current.setSize(w, h);
     };
 
     window.addEventListener('resize', handleResize);
+    // 창 크기뿐 아니라 컨테이너 자체의 크기 변화(휴대폰 회전, 주소창 표시/숨김)에도 맞춘다
+    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(handleResize) : null;
+    if (resizeObserver && containerRef.current) resizeObserver.observe(containerRef.current);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      resizeObserver?.disconnect();
       cancelAnimationFrame(animationFrameId);
       if (renderer.domElement.parentElement) {
         renderer.domElement.parentElement.removeChild(renderer.domElement);
@@ -625,6 +657,7 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
       onLogMessage(`[화면 맞춤] 도면 크기: ${bbox.width.toFixed(1)} × ${bbox.height.toFixed(1)} mm`);
     }
   }, [model, onLogMessage]);
+  zoomExtentsRef.current = zoomExtents;
 
   useEffect(() => {
     rebuildEntities();
@@ -796,6 +829,7 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
   // 마우스 클릭 이벤트
   const handleClick = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
+    if (suppressClickRef.current) return; // 드래그/핀치 직후에 생기는 클릭은 무시
     const pt = worldMouse;
 
     if (mode === 'SELECT') {
@@ -940,12 +974,11 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
   };
 
   // 마우스 커서 위치 중심 줌
-  const zoomAtMouse = useCallback((clientX: number, clientY: number, deltaY: number) => {
+  const zoomByFactor = useCallback((clientX: number, clientY: number, factor: number) => {
     if (!cameraRef.current || !containerRef.current) return;
     const camera = cameraRef.current;
 
     const beforeWorld = screenToWorld(clientX, clientY);
-    const factor = deltaY < 0 ? 1.2 : 0.8333;
     const nextZoom = Math.max(0.001, Math.min(1000, camera.zoom * factor));
     camera.zoom = nextZoom;
     camera.updateProjectionMatrix();
@@ -956,6 +989,10 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
     camera.position.y += (beforeWorld.y - afterWorld.y);
     camera.updateMatrixWorld();
   }, [screenToWorld]);
+
+  const zoomAtMouse = useCallback((clientX: number, clientY: number, deltaY: number) => {
+    zoomByFactor(clientX, clientY, deltaY < 0 ? 1.2 : 0.8333);
+  }, [zoomByFactor]);
 
   // 네이티브 휠 리스너 (passive: false)
   useEffect(() => {
@@ -972,6 +1009,116 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
       el.removeEventListener('wheel', onNativeWheel);
     };
   }, [zoomAtMouse]);
+
+  // 터치 리스너와 외부 신호가 항상 최신 값을 쓰도록 매 렌더링마다 갱신
+  modeRef.current = mode;
+  selectedIdRef.current = selectedEntityId;
+  const touchApiRef = useRef<any>(null);
+  touchApiRef.current = { model, rebuildEntities, onModelChange };
+  const finishRef = useRef<() => void>(() => {});
+  finishRef.current = () => finishOrCancel();
+
+  useEffect(() => {
+    if (commandSignal && commandSignal.id > 0) finishRef.current();
+  }, [commandSignal?.id]);
+
+  // 터치 조작: 한 손가락 드래그 = 화면 이동(이동 모드에서 선택된 개체가 있으면 개체 이동),
+  // 두 손가락 = 확대/축소 + 이동, 가볍게 탭 = 클릭(브라우저가 클릭 이벤트로 변환)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const t = touchRef.current;
+    const DRAG_THRESHOLD = 8; // 이 거리(px)보다 많이 움직여야 드래그로 인정 (탭과 구분)
+    let startPt = { x: 0, y: 0 };
+
+    const toPts = (e: TouchEvent) => Array.from(e.touches).map(p => ({ x: p.clientX, y: p.clientY }));
+    const dist = (p: { x: number; y: number }[]) => Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+    const mid = (p: { x: number; y: number }[]) => ({ x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 });
+
+    // 화면의 한 점을 prev에서 cur로 옮긴 만큼 도면을 따라 움직인다
+    const panBy = (prev: { x: number; y: number }, cur: { x: number; y: number }) => {
+      const cam = cameraRef.current;
+      if (!cam) return;
+      const before = screenToWorld(prev.x, prev.y);
+      const after = screenToWorld(cur.x, cur.y);
+      cam.position.x += before.x - after.x;
+      cam.position.y += before.y - after.y;
+      cam.updateMatrixWorld();
+    };
+
+    const onStart = (e: TouchEvent) => {
+      lastTouchTimeRef.current = Date.now();
+      t.pts = toPts(e);
+      if (t.pts.length === 1) {
+        t.moved = false;
+        startPt = t.pts[0];
+        t.moving = modeRef.current === 'MOVE' && !!selectedIdRef.current;
+        if (t.moving) moveStartRef.current = screenToWorld(t.pts[0].x, t.pts[0].y);
+      } else if (t.pts.length >= 2) {
+        t.moved = true;
+        t.moving = false;
+        t.dist = dist(t.pts);
+      }
+    };
+
+    const onMove = (e: TouchEvent) => {
+      lastTouchTimeRef.current = Date.now();
+      const pts = toPts(e);
+      const prev = t.pts;
+      if (pts.length >= 2 && prev.length >= 2) {
+        e.preventDefault();
+        const c = mid(pts);
+        panBy(mid(prev), c);
+        const d = dist(pts);
+        if (t.dist > 0 && d > 0) zoomByFactor(c.x, c.y, d / t.dist);
+        t.dist = d;
+        t.moved = true;
+      } else if (pts.length === 1 && prev.length === 1) {
+        if (!t.moved && Math.hypot(pts[0].x - startPt.x, pts[0].y - startPt.y) < DRAG_THRESHOLD) return;
+        e.preventDefault();
+        t.moved = true;
+        if (t.moving) {
+          const api = touchApiRef.current;
+          const w = screenToWorld(pts[0].x, pts[0].y);
+          const dX = w.x - moveStartRef.current.x;
+          const dY = w.y - moveStartRef.current.y;
+          if (selectedIdRef.current && (Math.abs(dX) > 0.01 || Math.abs(dY) > 0.01)) {
+            api.model.selectEntity(selectedIdRef.current);
+            if (api.model.moveSelected(dX, dY)) {
+              api.rebuildEntities();
+              moveStartRef.current = w;
+              if (api.onModelChange) api.onModelChange();
+            }
+          }
+        } else {
+          panBy(prev[0], pts[0]);
+        }
+      }
+      t.pts = pts;
+    };
+
+    const onEnd = (e: TouchEvent) => {
+      lastTouchTimeRef.current = Date.now();
+      if (t.moved) {
+        suppressClickRef.current = true;
+        setTimeout(() => { suppressClickRef.current = false; }, 350);
+      }
+      t.pts = toPts(e);
+      if (t.pts.length === 1) startPt = t.pts[0]; // 두 손가락 중 하나만 떼면 남은 손가락으로 계속 이동
+      if (t.pts.length === 0) t.moving = false;
+    };
+
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchmove', onMove, { passive: false });
+    el.addEventListener('touchend', onEnd);
+    el.addEventListener('touchcancel', onEnd);
+    return () => {
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', onMove);
+      el.removeEventListener('touchend', onEnd);
+      el.removeEventListener('touchcancel', onEnd);
+    };
+  }, [screenToWorld, zoomByFactor]);
 
   // 마우스 다운/업 (팬 제어, 이동 제어)
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -994,7 +1141,13 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
+    // 손가락을 오래 누를 때 생기는 가짜 우클릭은 무시한다 (모바일은 화면의 '완료/취소' 버튼을 사용)
+    if (Date.now() - lastTouchTimeRef.current < 700) return;
+    finishOrCancel();
+  };
 
+  // 우클릭(또는 모바일 '완료/취소' 버튼): AREA는 면적 계산 완료, 그 외는 진행 중인 명령 취소
+  const finishOrCancel = () => {
     if (mode === 'AREA') {
       if (areaPointsRef.current.length >= 3) {
         const res = CadModel.measureArea(areaPointsRef.current);
@@ -1023,7 +1176,8 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
         width: '100%',
         height: '100%',
         cursor: mode === 'PAN' ? (isPanningRef.current ? 'grabbing' : 'grab') : 'crosshair',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        touchAction: 'none' // 브라우저의 스크롤·확대 대신 직접 구현한 터치 조작을 쓴다
       }}
       onMouseMove={handleMouseMove}
       onClick={handleClick}

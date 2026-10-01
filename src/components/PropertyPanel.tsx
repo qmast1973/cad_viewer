@@ -12,6 +12,8 @@ interface PropertyPanelProps {
   lastArea: AreaResult | null;
   selectedEntity: CadEntity | null;
   theme?: 'DARK' | 'LIGHT';
+  /** 패널 너비 (기본 300px, 모바일 하단 시트에서는 '100%') */
+  width?: string;
   onLayerToggle: (name: string) => void;
 }
 
@@ -21,6 +23,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   lastArea,
   selectedEntity,
   theme = 'DARK',
+  width = '300px',
   onLayerToggle
 }) => {
   const entities = model.getEntities();
@@ -36,9 +39,9 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   return (
     <div
       style={{
-        width: '300px',
+        width,
         backgroundColor: isLight ? '#f6f8fa' : '#1c2128',
-        borderLeft: isLight ? '1px solid #d0d7de' : '1px solid #30363d',
+        borderLeft: width === '300px' ? (isLight ? '1px solid #d0d7de' : '1px solid #30363d') : 'none',
         display: 'flex',
         flexDirection: 'column',
         color: isLight ? '#24292f' : '#c9d1d9',

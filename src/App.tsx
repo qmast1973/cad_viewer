@@ -10,8 +10,15 @@ import { CadCanvas, CadToolMode } from './components/CadCanvas.tsx';
 import { Toolbar } from './components/Toolbar.tsx';
 import { CommandBar } from './components/CommandBar.tsx';
 import { PropertyPanel } from './components/PropertyPanel.tsx';
+import { MobileTopBar, MobileMenu, MobileToolBar, MobileActionStack, useIsMobile } from './components/MobileBars.tsx';
 
 export const App: React.FC = () => {
+  const isMobile = useIsMobile();
+  // 모바일 전용 화면 상태: 메뉴, 속성 시트, 명령창, 완료/취소 신호
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [commandVisible, setCommandVisible] = useState(false);
+  const [commandSignal, setCommandSignal] = useState({ id: 0 });
   const modelRef = useRef<CadModel>(new CadModel());
   const [, setForceUpdate] = useState(0);
   const [zoomTrigger, setZoomTrigger] = useState(1);
@@ -303,6 +310,156 @@ export const App: React.FC = () => {
   };
 
   const isLight = theme === 'LIGHT';
+
+  // 모바일 하단 도구 바의 실행 취소 / 다시 실행 / 삭제 (데스크톱의 Ctrl+Z, Ctrl+Y, Delete와 같은 동작)
+  const handleUndo = () => {
+    if (modelRef.current.undo()) { triggerUpdate(); addLog('✓ 실행 취소'); } else addLog('✗ 취소할 작업이 없습니다.');
+  };
+  const handleRedo = () => {
+    if (modelRef.current.redo()) { triggerUpdate(); addLog('✓ 다시 실행'); } else addLog('✗ 다시 할 작업이 없습니다.');
+  };
+  const handleDeleteSelected = () => {
+    if (modelRef.current.deleteSelected()) {
+      setSelectedEntity(null);
+      triggerUpdate();
+      addLog('✓ 선택된 개체 삭제됨');
+    } else {
+      addLog('선택된 개체가 없습니다. 먼저 [선택]에서 개체를 누르세요.');
+    }
+  };
+
+  if (isMobile) {
+    const drawing = mode === 'LINE' || mode === 'CIRCLE' || mode === 'DIST' || mode === 'AREA';
+    const floatBtn = (bg: string): React.CSSProperties => ({
+      minWidth: 64, height: 44, padding: '0 14px', border: 'none', borderRadius: 22, color: '#fff',
+      backgroundColor: bg, fontSize: 14, fontWeight: 'bold', boxShadow: '0 2px 8px rgba(0,0,0,0.4)'
+    });
+    return (
+      <div
+        className="app-root"
+        style={{ display: 'flex', flexDirection: 'column', width: '100%', overflow: 'hidden', backgroundColor: isLight ? '#f6f8fa' : '#161b22' }}
+      >
+        <MobileTopBar
+          theme={theme}
+          menuOpen={menuOpen}
+          infoOpen={infoOpen}
+          onOpenFile={handleOpenFile}
+          onExport={handleExport}
+          onToggleInfo={() => { setInfoOpen(v => !v); setMenuOpen(false); }}
+          onToggleMenu={() => { setMenuOpen(v => !v); setInfoOpen(false); }}
+        />
+
+        {/* 도면 화면: 남은 공간을 모두 채운다. 메뉴·속성 시트는 도면 위에 겹쳐 표시(도면 크기가 변하지 않음) */}
+        <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+          <CadCanvas
+            model={modelRef.current}
+            mode={mode}
+            orthoEnabled={orthoEnabled}
+            osnapEnabled={osnapEnabled}
+            textVisible={textVisible}
+            gridEnabled={gridEnabled}
+            theme={theme}
+            zoomTrigger={zoomTrigger}
+            commandSignal={commandSignal}
+            onMeasureComplete={res => setLastMeasure(res)}
+            onAreaComplete={res => setLastArea(res)}
+            onSelectEntity={ent => { setSelectedEntity(ent); if (ent) { setInfoOpen(true); setMenuOpen(false); } }}
+            onModelChange={triggerUpdate}
+            onLogMessage={addLog}
+          />
+
+          {/* 최근 안내 메시지 한 줄 (측정 결과 등) */}
+          <div
+            style={{
+              position: 'absolute', top: 6, left: 8, right: 60, pointerEvents: 'none', fontSize: 12, lineHeight: 1.35,
+              color: isLight ? '#24292f' : '#e6edf3', textShadow: isLight ? '0 0 3px #fff' : '0 0 3px #000',
+              display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden'
+            }}
+          >
+            {logs[logs.length - 1]}
+          </div>
+
+          <MobileActionStack
+            theme={theme}
+            onZoomExtents={triggerZoomExtents}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            onDelete={handleDeleteSelected}
+          />
+
+          {/* 그리는 중에는 우클릭 대신 쓰는 완료/취소 버튼 */}
+          {drawing && (
+            <div style={{ position: 'absolute', right: 12, bottom: infoOpen ? '52%' : 40, display: 'flex', gap: 8, zIndex: 5 }}>
+              {mode === 'AREA' && (
+                <button style={floatBtn('#238636')} onClick={() => setCommandSignal(s => ({ id: s.id + 1 }))}>✔ 완료</button>
+              )}
+              <button
+                style={floatBtn('#6e7681')}
+                onClick={() => { setMode('SELECT'); }}
+              >✖ 종료</button>
+            </div>
+          )}
+
+          {menuOpen && (
+            <MobileMenu
+              theme={theme}
+              textVisible={textVisible}
+              orthoEnabled={orthoEnabled}
+              osnapEnabled={osnapEnabled}
+              gridEnabled={gridEnabled}
+              commandVisible={commandVisible}
+              onLoadSample={loadDefaultSample}
+              onClear={handleClear}
+              onToggleText={() => setTextVisible(v => !v)}
+              onToggleOrtho={() => setOrthoEnabled(v => !v)}
+              onToggleOsnap={() => setOsnapEnabled(v => !v)}
+              onToggleGrid={() => setGridEnabled(v => !v)}
+              onToggleTheme={() => setTheme(t => (t === 'DARK' ? 'LIGHT' : 'DARK'))}
+              onToggleCommand={() => setCommandVisible(v => !v)}
+              onClose={() => setMenuOpen(false)}
+            />
+          )}
+
+          {/* 속성 시트: 개체를 누르거나 ℹ️ 버튼을 눌렀을 때만 아래에서 올라온다 */}
+          {infoOpen && (
+            <div
+              style={{
+                position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '50%', zIndex: 10, display: 'flex', flexDirection: 'column',
+                backgroundColor: isLight ? '#f6f8fa' : '#1c2128', borderTop: `1px solid ${isLight ? '#d0d7de' : '#30363d'}`,
+                boxShadow: '0 -4px 14px rgba(0,0,0,0.35)', borderRadius: '12px 12px 0 0'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 12px', color: isLight ? '#24292f' : '#c9d1d9', fontSize: 13, fontWeight: 'bold' }}>
+                <span>속성 / 측정 결과 / 레이어</span>
+                <button
+                  onClick={() => setInfoOpen(false)}
+                  aria-label="닫기"
+                  style={{ width: 44, height: 36, border: 'none', background: 'transparent', color: 'inherit', fontSize: 18 }}
+                >✕</button>
+              </div>
+              <div style={{ overflowY: 'auto', minHeight: 0 }}>
+                <PropertyPanel
+                  model={modelRef.current}
+                  lastMeasure={lastMeasure}
+                  lastArea={lastArea}
+                  selectedEntity={selectedEntity}
+                  theme={theme}
+                  width="100%"
+                  onLayerToggle={handleLayerToggle}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {commandVisible && (
+          <CommandBar logs={logs} setMode={setMode} onClear={handleClear} onLogMessage={addLog} />
+        )}
+
+        <MobileToolBar theme={theme} mode={mode} setMode={setMode} />
+      </div>
+    );
+  }
 
   return (
     <div
