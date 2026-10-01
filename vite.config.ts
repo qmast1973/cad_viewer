@@ -44,6 +44,8 @@ function cadApiPlugin(): Plugin {
 }
 
 export default defineConfig({
+  // GitHub Pages처럼 하위 경로에 배포할 때 VITE_BASE=/저장소이름/ 으로 지정 (기본값 '/')
+  base: process.env.VITE_BASE || '/',
   plugins: [react(), cadApiPlugin()],
   server: {
     port: 5173,

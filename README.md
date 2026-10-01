@@ -42,6 +42,11 @@ npm run build && npm run preview   # 빌드본: http://localhost:4173
 - DWG 변환기 실행 파일(`bin/`)은 GPL-3.0이라 저장소에 포함하지 않습니다. 다운로드 스크립트가 공식 릴리스에서 받아 옵니다.
 - DWG 관련 기능은 현재 **Windows 전용**입니다 (`.exe` 사용). DXF 보기·저장은 운영체제와 무관합니다.
 
+## 웹 배포 (GitHub Pages)
+
+`main`에 push하면 GitHub Actions(`.github/workflows/pages.yml`)가 정적 빌드를 `https://qmast1973.github.io/cad_viewer/`에 올립니다.
+정적 호스팅에는 서버가 없어 **DWG는 브라우저 내장 엔진으로 읽으며, 표제란 등 일부 개체가 빠질 수 있습니다.** DXF 보기·측정·편집·저장은 서버 없이 동일하게 동작합니다. DWG를 정확히 읽으려면 위의 로컬 실행을 사용하세요.
+
 ## CLI 예
 
 ```powershell

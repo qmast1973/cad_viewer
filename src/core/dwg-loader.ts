@@ -68,7 +68,7 @@ export class DwgLoader {
   public static async getLibreDwg(): Promise<LibreDwg> {
     if (!this.instance) {
       try {
-        this.instance = await LibreDwg.create('/wasm');
+        this.instance = await LibreDwg.create(`${import.meta.env.BASE_URL}wasm`);
       } catch (err: any) {
         console.warn('LibreDwg WASM initialization failed:', err);
         // WASM 초기화 실패를 의도적으로 throw (DXF 폴백으로 처리됨)
@@ -99,7 +99,7 @@ export class DwgLoader {
     // 2. [1차 최우선 실행] 초고속 고안정성 백엔드 파서 API (/api/parse-dwg) 호출
     // 브라우저 샌드박스의 WebAssembly 메모리/어설션 한계를 우회하여 표제란까지 포함해 적재
     try {
-      const response = await fetch('/api/parse-dwg', {
+      const response = await fetch(`${import.meta.env.BASE_URL}api/parse-dwg`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: buffer
