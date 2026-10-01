@@ -127,6 +127,7 @@ async function main() {
   node src/agent-cli.js line --start "x,y" --end "x,y" [--layer "NAME"] : 선분(LINE) 추가
   node src/agent-cli.js circle --center "x,y" --radius "r" [--layer "NAME"] : 원(CIRCLE) 추가
   node src/agent-cli.js save --output <filePath>    : 도면을 AutoCAD/CADian 호환 DXF 파일로 저장
+  node src/agent-cli.js convert <in.dwg|in.dxf> --output <out.cadlite> : 큰 도면을 가벼운 도면(.cadlite)으로 변환 (서버 없이 웹에서 바로 열림)
   node src/agent-cli.js clear                       : 현재 도면 세션 초기화
 `);
     process.exit(0);
@@ -135,6 +136,64 @@ async function main() {
   const state = loadState();
 
   switch (command) {
+    // 큰 도면을 가벼운 도면(.cadlite)으로 변환: 웹에서 변환 서버 없이 몇 초 만에 열 수 있다 (현재 도면 세션과는 무관)
+    case 'convert': {
+      const inputPath = args[1];
+      let outPath = null;
+      for (let i = 2; i < args.length; i++) if (args[i] === '--output') outPath = args[i + 1];
+      if (!inputPath || !fs.existsSync(inputPath)) {
+        console.error(JSON.stringify({ status: 'error', message: `파일을 찾을 수 없습니다: ${inputPath}` }));
+        process.exit(1);
+      }
+      if (!outPath) {
+        console.error(JSON.stringify({ status: 'error', message: '--output <filePath.cadlite> 인자가 필요합니다.' }));
+        process.exit(1);
+      }
+      const t0 = Date.now();
+      const { parseDwgIsolated, parseDxfText } = await import('./core/dwg-parser-isolated.ts');
+      const { encodeLite } = await import('./core/cadlite.ts');
+      const inBuf = fs.readFileSync(inputPath);
+      const isDwgIn = String.fromCharCode(...inBuf.subarray(0, 2)) === 'AC';
+      const parsed = isDwgIn
+        ? parseDwgIsolated(inBuf, { cliFallback: false, compactLines: 'auto' })
+        : parseDxfText(inBuf.toString('utf-8'), { compactLines: 'auto' });
+      if (!parsed || parsed.status !== 'success') {
+        console.error(JSON.stringify({ status: 'error', message: '도면을 해석하지 못했습니다.' }));
+        process.exit(1);
+      }
+      // base64 선분 묶음 → Float32Array (4바이트 경계로 복사)
+      const batches = (parsed.lineBatches || []).map(b => {
+        const raw = Buffer.from(b.data, 'base64');
+        const copy = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+        return { layer: b.layer, color: b.color, count: b.count, positions: new Float32Array(copy) };
+      });
+      const parts = encodeLite({
+        version: 1,
+        source: path.basename(inputPath),
+        layers: parsed.layers,
+        layerColors: parsed.layerColors || {},
+        entities: parsed.entities,
+        lineOrigin: parsed.lineOrigin || { x: 0, y: 0 },
+        skippedEntities: parsed.skippedEntities
+      }, batches);
+      const zlib = await import('zlib');
+      const gz = zlib.gzipSync(Buffer.concat(parts.map(p => Buffer.from(p.buffer, p.byteOffset, p.byteLength))), { level: 5 });
+      fs.writeFileSync(outPath, gz);
+      console.log(JSON.stringify({
+        status: 'success',
+        input: inputPath,
+        output: outPath,
+        bytes: gz.length,
+        lines: parsed.lineCount,
+        circles: parsed.circleCount,
+        texts: parsed.textCount,
+        largeMode: batches.length > 0,
+        skippedEntities: parsed.skippedEntities || {},
+        seconds: Number(((Date.now() - t0) / 1000).toFixed(1))
+      }, null, 2));
+      break;
+    }
+
     case 'clear': {
       saveState({ layers: { '0': { name: '0', color: '#FFFFFF' } }, entities: [], nextId: 1 });
       console.log(JSON.stringify({ status: 'success', message: '도면 상태가 초기화되었습니다.' }, null, 2));

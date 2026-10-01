@@ -52,7 +52,7 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
     >
       <div style={{ fontWeight: 'bold', fontSize: 13, color: '#58a6ff', flex: 1, whiteSpace: 'nowrap' }}>📐 Web CAD</div>
       <input
-        type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".dxf,.dwg"
+        type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".dxf,.dwg,.cadlite"
         onChange={e => { const f = e.target.files?.[0]; if (f) onOpenFile(f); e.target.value = ''; }}
       />
       <button style={iconBtn(c.btn, c.text, c.border)} onClick={() => fileInputRef.current?.click()} aria-label="도면 열기">📂</button>
@@ -78,6 +78,7 @@ interface MobileMenuProps {
   gridEnabled: boolean;
   commandVisible: boolean;
   onLoadSample: () => void;
+  onExportLite: () => void;
   onClear: () => void;
   onToggleText: () => void;
   onToggleOrtho: () => void;
@@ -117,6 +118,7 @@ export const MobileMenu: React.FC<MobileMenuProps> = p => {
         }}
       >
         {item('📄 샘플 도면 불러오기', null, () => { p.onLoadSample(); p.onClose(); })}
+        {item('📦 가벼운 도면(.cadlite)으로 저장', null, p.onExportLite)}
         {item('🗑️ 도면 지우기', null, () => { p.onClear(); p.onClose(); }, true)}
         {item('🔤 문자 표시', p.textVisible, p.onToggleText)}
         {item('직교 (수평/수직 고정)', p.orthoEnabled, p.onToggleOrtho)}

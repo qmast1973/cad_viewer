@@ -10,6 +10,7 @@ import { CadCanvas, CadToolMode } from './components/CadCanvas.tsx';
 import { Toolbar } from './components/Toolbar.tsx';
 import { CommandBar } from './components/CommandBar.tsx';
 import { PropertyPanel } from './components/PropertyPanel.tsx';
+import { makeLiteBlob, readLiteBlob, LITE_EXTENSION } from './core/cadlite.ts';
 import { MobileTopBar, MobileMenu, MobileToolBar, MobileActionStack, useIsMobile } from './components/MobileBars.tsx';
 
 export const App: React.FC = () => {
@@ -21,6 +22,7 @@ export const App: React.FC = () => {
   const [commandVisible, setCommandVisible] = useState(false);
   const [commandSignal, setCommandSignal] = useState({ id: 0 });
   const modelRef = useRef<CadModel>(new CadModel());
+  const openedNameRef = useRef('drawing'); // 마지막으로 연 도면 이름 (저장 파일 이름에 사용)
   const [, setForceUpdate] = useState(0);
   const [zoomTrigger, setZoomTrigger] = useState(1);
 
@@ -188,15 +190,33 @@ export const App: React.FC = () => {
   const handleOpenFile = async (file: File) => {
     const fileName = file.name;
     const lowerName = fileName.toLowerCase();
-    addLog(`도면 파일 열기 시도: ${fileName} (${(file.size / 1024).toFixed(1)} KB)...${file.size > 5 * 1024 * 1024 ? ' 큰 도면은 1분 정도 걸릴 수 있습니다.' : ''}`);
+    openedNameRef.current = fileName.slice(0, Math.max(1, fileName.lastIndexOf(String.fromCharCode(46))));
+    addLog(`도면 파일 열기 시도: ${fileName} (${(file.size / 1024).toFixed(1)} KB)...${file.size > 5 * 1024 * 1024 && !lowerName.endsWith(LITE_EXTENSION) ? ' 큰 도면은 1분 정도 걸릴 수 있습니다.' : ''}`);
 
     try {
+      // 가벼운 도면(.cadlite): 서버 없이 바로 열린다
+      if (lowerName.endsWith(LITE_EXTENSION)) {
+        const t0 = performance.now();
+        const dec = await readLiteBlob(file);
+        const res = modelRef.current.loadLite(dec);
+        openedNameRef.current = fileName.slice(0, Math.max(1, fileName.lastIndexOf(String.fromCharCode(46))));
+        triggerUpdate();
+        setTimeout(triggerZoomExtents, 80);
+        const bbox = modelRef.current.getBoundingBox();
+        const dimStr = bbox ? `[도면 크기: ${bbox.width.toFixed(1)} × ${bbox.height.toFixed(1)} mm]` : '';
+        addLog(`✓ 가벼운 도면 로드 완료 (${((performance.now() - t0) / 1000).toFixed(1)}초): 선분 ${res.lineCount}개, 원 ${res.circleCount}개, 문자 ${res.textCount}개. ${dimStr}`);
+        if (modelRef.current.getStaticLineCount() > 0) {
+          addLog('ℹ 대용량 도면 모드: 선은 보기·측정용(선택·이동·스냅 불가)으로 표시합니다. 문자는 충분히 확대하면 보이는 범위만 표시됩니다.');
+        }
+        return;
+      }
+
       const buffer = await file.arrayBuffer();
       const isDxfExt = lowerName.endsWith('.dxf');
       const isDwgExt = lowerName.endsWith('.dwg');
 
       if (!isDxfExt && !isDwgExt) {
-        addLog('⚠️ 경고: .dwg 또는 .dxf 확장자 파일만 지원됩니다.');
+        addLog('⚠️ 경고: .dwg, .dxf, .cadlite 확장자 파일만 지원됩니다.');
         return;
       }
 
@@ -309,6 +329,26 @@ export const App: React.FC = () => {
       if (modelRef.current.getStaticLineCount() > 0) addLog('ℹ 대용량 도면의 선분은 화면용 정밀도(약 0.01 이내 오차)로 저장됩니다.');
     } catch (err: any) {
       addLog(`도면 내보내기 실패: ${err.message || err}`);
+    }
+  };
+
+  // 가벼운 도면(.cadlite) 저장: 큰 도면을 한 번 변환해 두면 서버 없이 어디서나 몇 초 만에 열린다
+  const handleExportLite = async () => {
+    try {
+      addLog('가벼운 도면(.cadlite)을 만드는 중... (큰 도면은 수십 초 걸릴 수 있습니다)');
+      const snap = modelRef.current.getLiteSnapshot(openedNameRef.current);
+      const blob = await makeLiteBlob(snap.header, snap.batches);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${openedNameRef.current}${LITE_EXTENSION}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      addLog(`✓ 가벼운 도면 저장 완료 (${(blob.size / 1048576).toFixed(1)} MB). 이 파일은 서버 없이 어디서나 열 수 있습니다.`);
+    } catch (err: any) {
+      addLog(`가벼운 도면 저장 실패: ${err.message || err}`);
     }
   };
 
@@ -440,6 +480,7 @@ export const App: React.FC = () => {
               gridEnabled={gridEnabled}
               commandVisible={commandVisible}
               onLoadSample={loadDefaultSample}
+              onExportLite={() => { setMenuOpen(false); handleExportLite(); }}
               onClear={handleClear}
               onToggleText={() => setTextVisible(v => !v)}
               onToggleOrtho={() => setOrthoEnabled(v => !v)}
@@ -521,6 +562,7 @@ export const App: React.FC = () => {
         onOpenFile={handleOpenFile}
         onLoadSample={loadDefaultSample}
         onExport={handleExport}
+        onExportLite={handleExportLite}
         onClear={handleClear}
         onZoomExtents={triggerZoomExtents}
         infoOpen={infoOpen}

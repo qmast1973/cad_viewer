@@ -17,6 +17,7 @@ interface ToolbarProps {
   onOpenFile: (file: File) => void;
   onLoadSample: () => void;
   onExport: () => void;
+  onExportLite?: () => void;
   onClear: () => void;
   onZoomExtents?: () => void;
   infoOpen?: boolean;
@@ -41,6 +42,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onOpenFile,
   onLoadSample,
   onExport,
+  onExportLite,
   onClear,
   onZoomExtents,
   infoOpen,
@@ -84,7 +86,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           type="file"
           ref={fileInputRef}
           style={{ display: 'none' }}
-          accept=".dxf,.dwg"
+          accept=".dxf,.dwg,.cadlite"
           onChange={handleFileChange}
         />
         <button
@@ -92,7 +94,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           style={btnStyle(isLight)}
           title="DWG 또는 DXF 도면 파일 열기"
         >
-          📂 열기 (DWG/DXF)
+          📂 열기 (DWG/DXF/가벼운도면)
         </button>
 
         <button
@@ -110,6 +112,16 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         >
           💾 DXF 저장
         </button>
+
+        {onExportLite && (
+          <button
+            onClick={onExportLite}
+            style={btnStyle(isLight)}
+            title="가벼운 도면(.cadlite)으로 저장: 큰 도면을 한 번 변환해 두면 서버 없이 어디서나 몇 초 만에 열립니다"
+          >
+            📦 가벼운 도면 저장
+          </button>
+        )}
 
         <button
           onClick={onClear}

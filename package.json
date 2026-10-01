@@ -9,12 +9,12 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/test-cad-viewer.js && node tests/test-compat.js && node tests/test-parse-dxf-text.js && node tests/test-sample-main-com.js && node tests/test-dwg-content.js && node tests/test-api-parse-dwg.js",
+    "test": "node tests/test-cad-viewer.js && node tests/test-compat.js && node tests/test-parse-dxf-text.js && node tests/test-sample-main-com.js && node tests/test-dwg-content.js && node tests/test-api-parse-dwg.js && node tests/test-cadlite.js",
     "test:dxf": "node tests/test-parse-dxf-text.js",
     "test:compat": "node tests/test-compat.js",
     "test:sample": "node tests/test-sample-main-com.js",
     "test:content": "node tests/test-dwg-content.js",
-    "test:api": "node tests/test-api-parse-dwg.js",
+    "test:api": "node tests/test-api-parse-dwg.js && node tests/test-cadlite.js",
     "cli": "node src/agent-cli.js"
   },
   "dependencies": {

@@ -1,6 +1,7 @@
 import Drawing from 'dxf-writer';
 import DxfParser from 'dxf-parser';
 import { shapeCount, applyEntityColor, hexToTrueColor } from './dxf-entity-color.ts';
+import type { LiteDecoded, LiteHeader } from './cadlite.ts';
 
 /**
  * AutoCAD MTEXT 서식 제어 문자열을 순수 텍스트로 정제
@@ -574,25 +575,14 @@ export class CadModel {
 
     // 대용량 모드로 전달된 선분 묶음 해독 (base64 → Float32Array)
     if (data.lineBatches && data.lineBatches.length > 0) {
-      this.staticOrigin = data.lineOrigin || { x: 0, y: 0 };
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const b of data.lineBatches) {
+      const batches: StaticLineBatch[] = data.lineBatches.map(b => {
         const bin = atob(b.data);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        const positions = new Float32Array(bytes.buffer, 0, bytes.length >> 2);
-        for (let i = 0; i < positions.length; i += 2) {
-          const x = positions[i], y = positions[i + 1];
-          if (x < minX) minX = x; if (x > maxX) maxX = x;
-          if (y < minY) minY = y; if (y > maxY) maxY = y;
-        }
-        this.staticBatches.push({ layer: b.layer, color: b.color, count: b.count, positions });
-        lineCount += b.count;
-      }
-      this.staticBounds = {
-        minX: minX + this.staticOrigin.x, minY: minY + this.staticOrigin.y,
-        maxX: maxX + this.staticOrigin.x, maxY: maxY + this.staticOrigin.y
-      };
+        return { layer: b.layer, color: b.color, count: b.count, positions: new Float32Array(bytes.buffer, 0, bytes.length >> 2) };
+      });
+      this.setStaticBatches(batches, data.lineOrigin || { x: 0, y: 0 });
+      lineCount += this.getStaticLineCount();
     }
     let circleCount = 0;
     let textCount = 0;
@@ -610,23 +600,91 @@ export class CadModel {
     }
 
     for (const ent of data.entities) {
-      if (ent.type === 'LINE' && ent.start && ent.end) {
-        this.addLine(ent.start, ent.end, ent.layer, ent.color);
-        lineCount++;
-      } else if (ent.type === 'CIRCLE' && ent.center && typeof ent.radius === 'number') {
-        this.addCircle(ent.center, ent.radius, ent.layer, ent.color);
-        circleCount++;
-      } else if (ent.type === 'TEXT' && ent.position && ent.text) {
-        this.addText(ent.text, ent.position, ent.height || 2.5, ent.rotation || 0, ent.layer, ent.color, ent.anchor);
-        textCount++;
-      } else if (ent.type === 'HATCH' && Array.isArray(ent.loops) && ent.loops.length > 0) {
-        this.addHatch(ent.loops, ent.solid !== false, ent.layer, ent.color);
-        hatchCount++;
-      } else if (ent.type === 'POINT' && ent.position) {
-        this.addPoint(ent.position, ent.layer, ent.color);
-      }
+      const kind = this.addImportedEntity(ent);
+      if (kind === 'LINE') lineCount++;
+      else if (kind === 'CIRCLE') circleCount++;
+      else if (kind === 'TEXT') textCount++;
+      else if (kind === 'HATCH') hatchCount++;
     }
 
+    return { lineCount, circleCount, textCount, hatchCount };
+  }
+
+  /** 파서/파일에서 읽은 개체 한 개를 추가한다. 추가했으면 개체 종류, 아니면 null */
+  private addImportedEntity(ent: any): string | null {
+    if (ent.type === 'LINE' && ent.start && ent.end) {
+      this.addLine(ent.start, ent.end, ent.layer, ent.color);
+    } else if (ent.type === 'CIRCLE' && ent.center && typeof ent.radius === 'number') {
+      this.addCircle(ent.center, ent.radius, ent.layer, ent.color);
+    } else if (ent.type === 'ARC' && ent.center && typeof ent.radius === 'number') {
+      this.addArc(ent.center, ent.radius, ent.startAngle, ent.endAngle, ent.layer, ent.color);
+    } else if (ent.type === 'POLYLINE' && Array.isArray(ent.vertices)) {
+      this.addPolyline(ent.vertices, !!ent.closed, ent.layer, ent.color);
+    } else if (ent.type === 'TEXT' && ent.position && ent.text) {
+      this.addText(ent.text, ent.position, ent.height || 2.5, ent.rotation || 0, ent.layer, ent.color, ent.anchor);
+    } else if (ent.type === 'HATCH' && Array.isArray(ent.loops) && ent.loops.length > 0) {
+      this.addHatch(ent.loops, ent.solid !== false, ent.layer, ent.color);
+    } else if (ent.type === 'POINT' && ent.position) {
+      this.addPoint(ent.position, ent.layer, ent.color);
+    } else {
+      return null;
+    }
+    return ent.type;
+  }
+
+  /** 읽기 전용 선분 묶음을 등록하고 그 범위(Extents)를 계산한다 */
+  private setStaticBatches(batches: StaticLineBatch[], origin: Point2D) {
+    this.staticBatches = batches;
+    this.staticOrigin = origin;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const b of batches) {
+      const p = b.positions;
+      for (let i = 0; i < p.length; i += 2) {
+        const x = p[i], y = p[i + 1];
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+    this.staticBounds = isFinite(minX)
+      ? { minX: minX + origin.x, minY: minY + origin.y, maxX: maxX + origin.x, maxY: maxY + origin.y }
+      : null;
+  }
+
+  /**
+   * 가벼운 도면(.cadlite) 저장용 데이터: 현재 도면의 개체·레이어·읽기 전용 선분 묶음.
+   * (선분 좌표는 Float32 정밀도라 약 0.01 이내 오차가 있다)
+   */
+  public getLiteSnapshot(source?: string): LiteDecoded {
+    const header: LiteHeader = {
+      version: 1,
+      source,
+      layers: this.getLayers().map(l => l.name),
+      layerColors: Object.fromEntries(this.getLayers().map(l => [l.name, l.color])),
+      entities: this.getEntities(),
+      lineOrigin: this.staticOrigin
+    };
+    return { header, batches: this.staticBatches };
+  }
+
+  /** 가벼운 도면(.cadlite)을 읽어 현재 도면으로 교체한다 */
+  public loadLite(dec: LiteDecoded): { lineCount: number; circleCount: number; textCount: number; hatchCount: number } {
+    this.clear();
+    this.resetLayers();
+    for (const name of dec.header.layers || []) {
+      if (!this.layers.has(name)) this.addLayer(name, dec.header.layerColors?.[name] || '#FFFFFF');
+    }
+    let lineCount = 0, circleCount = 0, textCount = 0, hatchCount = 0;
+    if (dec.batches.length > 0) {
+      this.setStaticBatches(dec.batches, dec.header.lineOrigin || { x: 0, y: 0 });
+      lineCount += this.getStaticLineCount();
+    }
+    for (const ent of dec.header.entities || []) {
+      const kind = this.addImportedEntity(ent);
+      if (kind === 'LINE') lineCount++;
+      else if (kind === 'CIRCLE') circleCount++;
+      else if (kind === 'TEXT') textCount++;
+      else if (kind === 'HATCH') hatchCount++;
+    }
     return { lineCount, circleCount, textCount, hatchCount };
   }
 
