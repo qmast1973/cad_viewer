@@ -1,6 +1,6 @@
 import Drawing from 'dxf-writer';
 import DxfParser from 'dxf-parser';
-import { shapeCount, applyEntityColor } from './dxf-entity-color.ts';
+import { shapeCount, applyEntityColor, hexToTrueColor } from './dxf-entity-color.ts';
 
 /**
  * AutoCAD MTEXT 서식 제어 문자열을 순수 텍스트로 정제
@@ -173,8 +173,23 @@ interface UndoRedoState {
   nextId: number;
 }
 
+/**
+ * 대용량 도면의 선분 묶음 (읽기 전용 배경). 개체 객체로 만들지 않고 (레이어, 색)별 좌표 배열로만 들고 있어
+ * 수백만 개의 선분도 화면에 그릴 수 있다. 선택·이동·스냅 대상은 아니다.
+ * positions: [x1,y1,x2,y2,...] Float32 (origin 기준 상대 좌표)
+ */
+export interface StaticLineBatch {
+  layer: string;
+  color: string;
+  count: number;
+  positions: Float32Array;
+}
+
 export class CadModel {
   private entities: Map<string, CadEntity> = new Map();
+  private staticBatches: StaticLineBatch[] = [];
+  private staticOrigin: Point2D = { x: 0, y: 0 };
+  private staticBounds: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
   private layers: Map<string, LayerInfo> = new Map();
   private activeLayerName: string = '0';
   private nextId: number = 1;
@@ -524,6 +539,23 @@ export class CadModel {
   public clear() {
     this.entities.clear();
     this.nextId = 1;
+    this.staticBatches = [];
+    this.staticBounds = null;
+  }
+
+  /** 대용량 도면의 읽기 전용 선분 묶음 */
+  public getStaticBatches(): StaticLineBatch[] {
+    return this.staticBatches;
+  }
+
+  public getStaticOrigin(): Point2D {
+    return this.staticOrigin;
+  }
+
+  public getStaticLineCount(): number {
+    let n = 0;
+    for (const b of this.staticBatches) n += b.count;
+    return n;
   }
 
   /**
@@ -533,10 +565,35 @@ export class CadModel {
     entities: Array<any>;
     layers?: string[];
     layerColors?: Record<string, string>;
+    lineBatches?: Array<{ layer: string; color: string; count: number; data: string }>;
+    lineOrigin?: { x: number; y: number };
   }): { lineCount: number; circleCount: number; textCount: number; hatchCount: number } {
     this.clear();
     this.resetLayers();
     let lineCount = 0;
+
+    // 대용량 모드로 전달된 선분 묶음 해독 (base64 → Float32Array)
+    if (data.lineBatches && data.lineBatches.length > 0) {
+      this.staticOrigin = data.lineOrigin || { x: 0, y: 0 };
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const b of data.lineBatches) {
+        const bin = atob(b.data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const positions = new Float32Array(bytes.buffer, 0, bytes.length >> 2);
+        for (let i = 0; i < positions.length; i += 2) {
+          const x = positions[i], y = positions[i + 1];
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+        this.staticBatches.push({ layer: b.layer, color: b.color, count: b.count, positions });
+        lineCount += b.count;
+      }
+      this.staticBounds = {
+        minX: minX + this.staticOrigin.x, minY: minY + this.staticOrigin.y,
+        maxX: maxX + this.staticOrigin.x, maxY: maxY + this.staticOrigin.y
+      };
+    }
     let circleCount = 0;
     let textCount = 0;
     let hatchCount = 0;
@@ -577,12 +634,12 @@ export class CadModel {
    * 도면 전체 바운딩 박스 (Extents) 정밀 계산
    */
   public getBoundingBox(): BoundingBox | null {
-    if (this.entities.size === 0) return null;
+    if (this.entities.size === 0 && !this.staticBounds) return null;
 
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
+    let minX = this.staticBounds ? this.staticBounds.minX : Infinity;
+    let minY = this.staticBounds ? this.staticBounds.minY : Infinity;
+    let maxX = this.staticBounds ? this.staticBounds.maxX : -Infinity;
+    let maxY = this.staticBounds ? this.staticBounds.maxY : -Infinity;
 
     for (const ent of this.entities.values()) {
       if (ent.type === 'LINE') {
@@ -793,6 +850,41 @@ export class CadModel {
     }
 
     return d.toDxfString();
+  }
+
+  /**
+   * DXF 저장용 Blob. 대용량 도면의 읽기 전용 선분 묶음이 있으면 문자열 한 덩어리(약 5억 자 제한)로 만들 수 없으므로
+   * 선분을 조각으로 나눠 ENTITIES 구역 끝에 이어 붙인다. (선 좌표는 화면용 Float32 정밀도라 약 0.01 이내 오차가 있다)
+   */
+  public exportDxfBlob(): Blob {
+    const base = this.exportDxf();
+    if (this.staticBatches.length === 0) return new Blob([base], { type: 'application/dxf' });
+
+    const entStart = base.indexOf('ENTITIES');
+    const endMarker = '\n0\nENDSEC';
+    const insertAt = entStart < 0 ? -1 : base.indexOf(endMarker, entStart);
+    if (insertAt < 0) return new Blob([base], { type: 'application/dxf' });
+
+    const parts: string[] = [base.slice(0, insertAt)];
+    const { x: ox, y: oy } = this.staticOrigin;
+    const CHUNK = 20000; // 한 조각에 담는 선분 수
+    for (const b of this.staticBatches) {
+      const tc = hexToTrueColor(b.color);
+      const head = `\n0\nLINE\n8\n${b.layer}${tc === null ? '' : `\n420\n${tc}`}`;
+      for (let i = 0; i < b.count; i += CHUNK) {
+        const end = Math.min(b.count, i + CHUNK);
+        let s = '';
+        for (let k = i; k < end; k++) {
+          const p = b.positions;
+          const x1 = (p[k * 4] + ox).toFixed(3), y1 = (p[k * 4 + 1] + oy).toFixed(3);
+          const x2 = (p[k * 4 + 2] + ox).toFixed(3), y2 = (p[k * 4 + 3] + oy).toFixed(3);
+          s += `${head}\n10\n${x1}\n20\n${y1}\n30\n0\n11\n${x2}\n21\n${y2}\n31\n0`;
+        }
+        parts.push(s);
+      }
+    }
+    parts.push(base.slice(insertAt));
+    return new Blob(parts, { type: 'application/dxf' });
   }
 
   /**

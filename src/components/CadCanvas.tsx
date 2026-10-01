@@ -8,6 +8,7 @@ import {
   CadModel,
   CadEntity,
   HatchEntity,
+  TextEntity,
   Point2D,
   MeasureResult,
   AreaResult,
@@ -202,6 +203,9 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
     pts: [], dist: 0, moved: false, moving: false
   });
   const lastAspectRef = useRef<number>(0);
+  const textLodGroupRef = useRef<THREE.Group>(new THREE.Group());
+  const textLodRef = useRef<() => void>(() => {});
+  const lodForceRef = useRef<boolean>(false);
   const zoomExtentsRef = useRef<() => void>(() => {});
   const lastTouchTimeRef = useRef<number>(0);
   const suppressClickRef = useRef<boolean>(false);
@@ -293,6 +297,24 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
     const layers = new Map(model.getLayers().map(l => [l.name, l]));
     // 벡터 문자는 색상별로 지오메트리를 모아 하나의 메시로 합쳐 그린다 (그리기 호출 수 절감)
     const textBatches = new Map<number, THREE.BufferGeometry[]>();
+    // 선분(LINE)도 색상별로 모아 하나의 LineSegments로 그린다 (개체마다 그리기 호출을 만들면 수만 개부터 느려진다)
+    const lineBatches = new Map<number, number[]>();
+
+    // 대용량 도면의 읽기 전용 선분 묶음: 좌표 배열 그대로 GPU에 올린다 (개체 객체 없음)
+    for (const batch of model.getStaticBatches()) {
+      const layer = layers.get(batch.layer);
+      if (layer && !layer.visible) continue;
+      let hex = batch.color ? parseInt(batch.color.replace('#', ''), 16) : 0xffffff;
+      if (theme === 'LIGHT' && hex === 0xffffff) hex = 0x111111;
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.BufferAttribute(batch.positions, 2));
+      const seg = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: hex }));
+      const origin = model.getStaticOrigin();
+      seg.position.set(origin.x, origin.y, 0);
+      seg.frustumCulled = false; // 좌표가 원점 기준 상대값이라 경계 계산을 생략한다
+      seg.renderOrder = 3;
+      group.add(seg);
+    }
 
     for (const ent of model.getEntities()) {
       const layer = layers.get(ent.layer);
@@ -303,15 +325,10 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
       if (isLight && colorHex === 0xffffff) colorHex = 0x111111;
 
       if (ent.type === 'LINE') {
-        const points = [
-          new THREE.Vector3(ent.start.x, ent.start.y, 0),
-          new THREE.Vector3(ent.end.x, ent.end.y, 0)
-        ];
-        const geom = new THREE.BufferGeometry().setFromPoints(points);
-        const mat = new THREE.LineBasicMaterial({ color: colorHex, linewidth: 2 });
-        const line = new THREE.Line(geom, mat);
-        line.renderOrder = 3;
-        group.add(line);
+        const arr = lineBatches.get(colorHex);
+        const coords = [ent.start.x, ent.start.y, 0, ent.end.x, ent.end.y, 0];
+        if (arr) arr.push(...coords);
+        else lineBatches.set(colorHex, coords);
       } else if (ent.type === 'CIRCLE') {
         const segments = 64;
         const points: THREE.Vector3[] = [];
@@ -360,6 +377,7 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
         group.add(polyline);
       } else if (ent.type === 'TEXT') {
         if (!textVisible) continue;
+        if (model.getStaticLineCount() > 0) continue; // 대용량 도면: updateTextLod가 보이는 범위만 그린다
         const textColor = ent.color || (layer ? layer.color : (isLight ? '#003366' : '#FFE873'));
         // 글꼴에 있는 글자만으로 된 문자는 벡터로, 그 외(한글 등)는 아래의 이미지 스프라이트로 폴백
         if (canVectorize(ent.text)) {
@@ -434,6 +452,15 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
       }
     }
 
+    // 모아 둔 선분을 색상별 LineSegments 하나로 추가
+    for (const [hex, coords] of lineBatches) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(coords), 3));
+      const seg = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: hex }));
+      seg.renderOrder = 3;
+      group.add(seg);
+    }
+
     // 모아 둔 벡터 문자 지오메트리를 색상별 메시 하나로 합쳐 추가
     for (const [hex, geoms] of textBatches) {
       const merged = mergeGeometries(geoms, false);
@@ -444,7 +471,85 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
       mesh.renderOrder = 4;
       group.add(mesh);
     }
+    lodForceRef.current = true;
   }, [model, textVisible, theme]);
+
+  // 대용량 도면의 문자: 지금 화면에 보이고 읽을 수 있는 크기(5px 이상)인 것만 그린다 (수만 개를 한꺼번에 만들면 멈춘다)
+  const updateTextLod = useCallback(() => {
+    const grp = textLodGroupRef.current;
+    while (grp.children.length > 0) {
+      const o: any = grp.children[0];
+      grp.remove(o);
+      o.geometry?.dispose();
+      o.material?.map?.dispose?.();
+      o.material?.dispose?.();
+    }
+    if (!textVisible || model.getStaticLineCount() === 0 || !cameraRef.current || !containerRef.current) return;
+
+    const cam = cameraRef.current;
+    const halfW = (cam.right - cam.left) / 2 / cam.zoom;
+    const halfH = (cam.top - cam.bottom) / 2 / cam.zoom;
+    const cx = cam.position.x;
+    const cy = cam.position.y;
+    const pxPerUnit = containerRef.current.clientHeight / (halfH * 2);
+    const layers = new Map(model.getLayers().map(l => [l.name, l]));
+    const isLight = theme === 'LIGHT';
+    const MAX_TEXTS = 3000;
+    const MAX_SPRITES = 400;
+
+    const cands: TextEntity[] = [];
+    for (const ent of model.getEntities()) {
+      if (ent.type !== 'TEXT') continue;
+      const h = ent.height || 2.5;
+      if (h * pxPerUnit < 5) continue;
+      const w = ent.text.length * h * 0.7;
+      const x = ent.position.x;
+      const y = ent.position.y;
+      if (x + w < cx - halfW || x > cx + halfW || y + h < cy - halfH || y - h > cy + halfH) continue;
+      const layer = layers.get(ent.layer);
+      if (layer && !layer.visible) continue;
+      cands.push(ent as TextEntity);
+    }
+    if (cands.length > MAX_TEXTS) {
+      cands.sort((a, b) => Math.hypot(a.position.x - cx, a.position.y - cy) - Math.hypot(b.position.x - cx, b.position.y - cy));
+      cands.length = MAX_TEXTS;
+    }
+
+    const bbox = model.getBoundingBox();
+    const bboxDiag = bbox ? Math.hypot(bbox.width, bbox.height) : 500;
+    const batches = new Map<number, THREE.BufferGeometry[]>();
+    let sprites = 0;
+    for (const ent of cands) {
+      const layer = layers.get(ent.layer);
+      let hex = ent.color ? parseInt(ent.color.replace('#', ''), 16) : (isLight ? 0x111111 : 0xffffff);
+      if (isLight && hex === 0xffffff) hex = 0x111111;
+      if (canVectorize(ent.text)) {
+        const geom = createTextGeometry(ent.text, ent.height || 2.5, ent.position.x, ent.position.y, 0.5, ent.rotation || 0, ent.anchor);
+        if (geom) {
+          const list = batches.get(hex);
+          if (list) list.push(geom);
+          else batches.set(hex, [geom]);
+        }
+        continue;
+      }
+      if (sprites >= MAX_SPRITES) continue;
+      sprites++;
+      const textColor = ent.color || (layer ? layer.color : (isLight ? '#003366' : '#FFE873'));
+      const sprite = createTextSprite(ent.text, (ent.height || 2.5) * 2, textColor, bboxDiag, ent.anchor);
+      sprite.position.set(ent.position.x, ent.position.y, 0.5);
+      if (ent.rotation) sprite.material.rotation = (ent.rotation * Math.PI) / 180;
+      grp.add(sprite);
+    }
+    for (const [hex, geoms] of batches) {
+      const merged = mergeGeometries(geoms, false);
+      geoms.forEach(g => g.dispose());
+      if (!merged) continue;
+      const mesh = new THREE.Mesh(merged, new THREE.MeshBasicMaterial({ color: hex, side: THREE.DoubleSide, depthWrite: false }));
+      mesh.renderOrder = 4;
+      grp.add(mesh);
+    }
+  }, [model, textVisible, theme]);
+  textLodRef.current = updateTextLod;
 
   // 선택 하이라이트 갱신
   useEffect(() => {
@@ -560,6 +665,7 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
 
     scene.add(gridGroupRef.current);
     scene.add(entityGroupRef.current);
+    scene.add(textLodGroupRef.current);
     scene.add(highlightGroupRef.current);
     scene.add(previewGroupRef.current);
     scene.add(snapGroupRef.current);
@@ -567,8 +673,17 @@ export const CadCanvas: React.FC<CadCanvasProps> = ({
     rebuildEntities();
 
     let animationFrameId: number;
+    let lodKey = '';
+    let lodChangedAt = 0;
+    let lodDirty = false;
     const animate = () => {
       animationFrameId = requestAnimationFrame(animate);
+      // 화면 이동·확대가 멈춘 뒤(0.25초) 보이는 범위의 문자를 다시 그린다 (대용량 도면에서만 실제로 동작)
+      const now = performance.now();
+      const key = `${camera.position.x.toFixed(2)}|${camera.position.y.toFixed(2)}|${camera.zoom}|${camera.right - camera.left}|${camera.top - camera.bottom}`;
+      if (key !== lodKey) { lodKey = key; lodChangedAt = now; lodDirty = true; }
+      if (lodForceRef.current) { lodForceRef.current = false; lodDirty = true; lodChangedAt = now - 1000; }
+      if (lodDirty && now - lodChangedAt > 250) { lodDirty = false; textLodRef.current(); }
       renderer.render(scene, camera);
     };
     animate();

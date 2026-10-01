@@ -184,6 +184,11 @@ async function main() {
             parsedWithBinary = true;
           }
         } catch (sharedErr) {
+          if (sharedErr?.largeDrawing) {
+            // 도면이 너무 커서 CLI(개체 객체 방식)로는 열 수 없다. 다른 방법으로 넘어가지 않고 이유를 알린다.
+            console.error(JSON.stringify({ status: 'error', message: sharedErr.message }));
+            process.exit(1);
+          }
           console.warn('공용 파서 사용 실패, CLI 자체 파서로 대체합니다:', sharedErr?.message || sharedErr);
         }
 

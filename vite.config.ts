@@ -18,7 +18,7 @@ function cadApiPlugin(): Plugin {
         req.on('end', () => {
           try {
             const buffer = Buffer.concat(chunks);
-            const result = parseDwgIsolated(buffer);
+            const result = parseDwgIsolated(buffer, { compactLines: 'auto' });
             res.setHeader('Content-Type', 'application/json');
             res.statusCode = 200;
             res.end(JSON.stringify(result));

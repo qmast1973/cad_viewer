@@ -28,7 +28,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
 }) => {
   const entities = model.getEntities();
   const layers = model.getLayers();
-  const lineCount = entities.filter(e => e.type === 'LINE').length;
+  const staticLineCount = model.getStaticLineCount(); // 대용량 도면의 읽기 전용 선분
+  const lineCount = entities.filter(e => e.type === 'LINE').length + staticLineCount;
   const circleCount = entities.filter(e => e.type === 'CIRCLE').length;
   const textCount = entities.filter(e => e.type === 'TEXT').length;
   const pointCount = entities.filter(e => e.type === 'POINT').length;
@@ -138,7 +139,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
         <div style={titleStyle(isLight)}>📊 도면 구성 현황</div>
         <div style={rowStyle}>
           <span>총 엔티티:</span>
-          <span style={valStyle(isLight)}>{entities.length}개</span>
+          <span style={valStyle(isLight)}>{entities.length + staticLineCount}개</span>
         </div>
         <div style={rowStyle}>
           <span>선분 (LINE):</span>

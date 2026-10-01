@@ -61,6 +61,9 @@ export class DwgLoader {
   /**
    * WebAssembly 인스턴스 초기화 (크래시 또는 예외 발생 시 인스턴스를 파기하여 재발 방지)
    */
+  /** 마지막 서버 변환(/api/parse-dwg) 실패 이유. 내장 엔진으로도 열지 못했을 때 안내에 쓴다 */
+  public static lastServerError: string | null = null;
+
   public static resetInstance() {
     this.instance = null;
   }
@@ -96,6 +99,8 @@ export class DwgLoader {
       throw new Error('표준 AutoCAD DWG 또는 DXF 헤더를 찾을 수 없습니다. 올바른 CAD 도면 파일인지 확인하십시오.');
     }
 
+    this.lastServerError = null;
+
     // 2. [1차 최우선 실행] 초고속 고안정성 백엔드 파서 API (/api/parse-dwg) 호출
     // 브라우저 샌드박스의 WebAssembly 메모리/어설션 한계를 우회하여 표제란까지 포함해 적재
     try {
@@ -105,6 +110,14 @@ export class DwgLoader {
         body: buffer
       });
 
+      if (!response.ok) {
+        // 서버가 이유를 알려 준 경우(예: 도면이 너무 큼) 그대로 보관해 화면에 보여 준다
+        try {
+          const errJson = await response.json();
+          if (errJson && typeof errJson.message === 'string') this.lastServerError = errJson.message;
+        } catch (_) {}
+        if (this.lastServerError && this.lastServerError.includes('너무 커서')) throw new Error(this.lastServerError);
+      }
       if (response.ok) {
         const data = await response.json();
         if (data.status === 'success' && Array.isArray(data.entities)) {
@@ -120,7 +133,8 @@ export class DwgLoader {
           };
         }
       }
-    } catch (apiErr) {
+    } catch (apiErr: any) {
+      if (apiErr && typeof apiErr.message === 'string' && apiErr.message.includes('너무 커서')) throw apiErr;
       console.warn('Backend parse-dwg API call failed, falling back to client-side WASM:', apiErr);
     }
 

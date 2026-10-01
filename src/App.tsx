@@ -16,7 +16,8 @@ export const App: React.FC = () => {
   const isMobile = useIsMobile();
   // 모바일 전용 화면 상태: 메뉴, 속성 시트, 명령창, 완료/취소 신호
   const [menuOpen, setMenuOpen] = useState(false);
-  const [infoOpen, setInfoOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false); // 속성창: 개체를 눌렀을 때(또는 ℹ️ 버튼)만 보인다
+  const infoManualRef = useRef(false); // ℹ️ 버튼으로 직접 연 경우, 빈 곳을 눌러도 닫지 않는다
   const [commandVisible, setCommandVisible] = useState(false);
   const [commandSignal, setCommandSignal] = useState({ id: 0 });
   const modelRef = useRef<CadModel>(new CadModel());
@@ -187,7 +188,7 @@ export const App: React.FC = () => {
   const handleOpenFile = async (file: File) => {
     const fileName = file.name;
     const lowerName = fileName.toLowerCase();
-    addLog(`도면 파일 열기 시도: ${fileName} (${(file.size / 1024).toFixed(1)} KB)...`);
+    addLog(`도면 파일 열기 시도: ${fileName} (${(file.size / 1024).toFixed(1)} KB)...${file.size > 5 * 1024 * 1024 ? ' 큰 도면은 1분 정도 걸릴 수 있습니다.' : ''}`);
 
     try {
       const buffer = await file.arrayBuffer();
@@ -219,6 +220,10 @@ export const App: React.FC = () => {
           const dimStr = bbox ? `[도면 크기: ${bbox.width.toFixed(1)} × ${bbox.height.toFixed(1)} mm]` : '';
           const verStr = res.versionName ? `[${res.versionName}] ` : '';
           addLog(`✓ ${verStr}DWG 로드 완료: 선분 ${res.lineCount}개, 원 ${res.circleCount}개, 문자 ${res.textCount}개 적재. ${dimStr}`);
+          if (modelRef.current.getStaticLineCount() > 0) {
+            // 대용량 도면: 선분은 읽기 전용 배경으로 그리고, 문자는 확대했을 때 보이는 범위만 그린다
+            addLog('ℹ 대용량 도면 모드: 선은 보기·측정용(선택·이동·스냅 불가)으로 표시합니다. 문자는 충분히 확대하면 보이는 범위만 표시됩니다.');
+          }
           if (res.skipped && Object.keys(res.skipped).length > 0) {
             addLog(`⚠ 지원하지 않아 표시하지 못한 개체: ${Object.entries(res.skipped).map(([t, n]) => `${t} ${n}개`).join(', ')}`);
           }
@@ -235,7 +240,10 @@ export const App: React.FC = () => {
               await parseAsDxf(buffer, 'DXF 자동 처리');
               return;
             } catch (_) {
-              throw new Error('DWG와 DXF 모두 로드 실패. 올바른 CAD 파일인지 확인하십시오.');
+              const why = DwgLoader.lastServerError ? `
+서버 변환 결과: ${DwgLoader.lastServerError}` : `
+내장 엔진 결과: ${String(dwgErr.message || '').replace('DWG_PARSE_FAILED|', '')}`;
+              throw new Error(`DWG와 DXF 모두 로드 실패. 올바른 CAD 파일인지 확인하십시오.${why}`);
             }
           }
           throw dwgErr;
@@ -278,8 +286,7 @@ export const App: React.FC = () => {
   // 도면 내보내기 (AutoCAD / CADian 호환 파일 다운로드)
   const handleExport = () => {
     try {
-      const dxfContent = modelRef.current.exportDxf();
-      const blob = new Blob([dxfContent], { type: 'application/dxf' });
+      const blob = modelRef.current.exportDxfBlob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -290,6 +297,7 @@ export const App: React.FC = () => {
       URL.revokeObjectURL(url);
 
       addLog('✓ DXF 저장 완료. (채움(HATCH)은 채움 없이 경계선으로 저장됩니다)');
+      if (modelRef.current.getStaticLineCount() > 0) addLog('ℹ 대용량 도면의 선분은 화면용 정밀도(약 0.01 이내 오차)로 저장됩니다.');
     } catch (err: any) {
       addLog(`도면 내보내기 실패: ${err.message || err}`);
     }
@@ -328,11 +336,25 @@ export const App: React.FC = () => {
     }
   };
 
+  // 개체를 누르면 속성창을 열고, 빈 곳을 누르면(직접 열지 않았다면) 닫는다
+  const handleSelectEntity = (ent: CadEntity | null) => {
+    setSelectedEntity(ent);
+    if (ent) { setInfoOpen(true); setMenuOpen(false); }
+    else if (!infoManualRef.current) setInfoOpen(false);
+  };
+  const handleToggleInfo = () => {
+    const next = !infoOpen;
+    infoManualRef.current = next;
+    setInfoOpen(next);
+    setMenuOpen(false);
+  };
+  const handleCloseInfo = () => { infoManualRef.current = false; setInfoOpen(false); };
+
   if (isMobile) {
     const drawing = mode === 'LINE' || mode === 'CIRCLE' || mode === 'DIST' || mode === 'AREA';
     const floatBtn = (bg: string): React.CSSProperties => ({
-      minWidth: 64, height: 44, padding: '0 14px', border: 'none', borderRadius: 22, color: '#fff',
-      backgroundColor: bg, fontSize: 14, fontWeight: 'bold', boxShadow: '0 2px 8px rgba(0,0,0,0.4)'
+      minWidth: 54, height: 34, padding: '0 12px', border: 'none', borderRadius: 17, color: '#fff',
+      backgroundColor: bg, fontSize: 13, fontWeight: 'bold', boxShadow: '0 2px 8px rgba(0,0,0,0.4)'
     });
     return (
       <div
@@ -345,8 +367,8 @@ export const App: React.FC = () => {
           infoOpen={infoOpen}
           onOpenFile={handleOpenFile}
           onExport={handleExport}
-          onToggleInfo={() => { setInfoOpen(v => !v); setMenuOpen(false); }}
-          onToggleMenu={() => { setMenuOpen(v => !v); setInfoOpen(false); }}
+          onToggleInfo={handleToggleInfo}
+          onToggleMenu={() => { setMenuOpen(v => !v); if (!menuOpen) handleCloseInfo(); }}
         />
 
         {/* 도면 화면: 남은 공간을 모두 채운다. 메뉴·속성 시트는 도면 위에 겹쳐 표시(도면 크기가 변하지 않음) */}
@@ -363,7 +385,7 @@ export const App: React.FC = () => {
             commandSignal={commandSignal}
             onMeasureComplete={res => setLastMeasure(res)}
             onAreaComplete={res => setLastArea(res)}
-            onSelectEntity={ent => { setSelectedEntity(ent); if (ent) { setInfoOpen(true); setMenuOpen(false); } }}
+            onSelectEntity={handleSelectEntity}
             onModelChange={triggerUpdate}
             onLogMessage={addLog}
           />
@@ -389,7 +411,7 @@ export const App: React.FC = () => {
 
           {/* 그리는 중에는 우클릭 대신 쓰는 완료/취소 버튼 */}
           {drawing && (
-            <div style={{ position: 'absolute', right: 12, bottom: infoOpen ? '52%' : 40, display: 'flex', gap: 8, zIndex: 5 }}>
+            <div style={{ position: 'absolute', right: 12, bottom: infoOpen ? '52%' : 36, display: 'flex', gap: 8, zIndex: 5 }}>
               {mode === 'AREA' && (
                 <button style={floatBtn('#238636')} onClick={() => setCommandSignal(s => ({ id: s.id + 1 }))}>✔ 완료</button>
               )}
@@ -426,15 +448,16 @@ export const App: React.FC = () => {
               style={{
                 position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '50%', zIndex: 10, display: 'flex', flexDirection: 'column',
                 backgroundColor: isLight ? '#f6f8fa' : '#1c2128', borderTop: `1px solid ${isLight ? '#d0d7de' : '#30363d'}`,
-                boxShadow: '0 -4px 14px rgba(0,0,0,0.35)', borderRadius: '12px 12px 0 0'
+                boxShadow: '0 -4px 14px rgba(0,0,0,0.35)', borderRadius: '12px 12px 0 0',
+                overflow: 'hidden', contain: 'paint' // 시트가 겹쳐도 아래의 도면(WebGL) 화면이 비지 않도록 그리기 범위를 시트 안으로 제한
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 12px', color: isLight ? '#24292f' : '#c9d1d9', fontSize: 13, fontWeight: 'bold' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 10px', color: isLight ? '#24292f' : '#c9d1d9', fontSize: 12, fontWeight: 'bold' }}>
                 <span>속성 / 측정 결과 / 레이어</span>
                 <button
-                  onClick={() => setInfoOpen(false)}
+                  onClick={handleCloseInfo}
                   aria-label="닫기"
-                  style={{ width: 44, height: 36, border: 'none', background: 'transparent', color: 'inherit', fontSize: 18 }}
+                  style={{ width: 36, height: 28, border: 'none', background: 'transparent', color: 'inherit', fontSize: 15 }}
                 >✕</button>
               </div>
               <div style={{ overflowY: 'auto', minHeight: 0 }}>
@@ -491,6 +514,8 @@ export const App: React.FC = () => {
         onExport={handleExport}
         onClear={handleClear}
         onZoomExtents={triggerZoomExtents}
+        infoOpen={infoOpen}
+        onToggleInfo={handleToggleInfo}
       />
 
       {/* 2. 중앙 메인 작업 영역 (Three.js 캔버스 + 속성창) */}
@@ -508,21 +533,30 @@ export const App: React.FC = () => {
             zoomTrigger={zoomTrigger}
             onMeasureComplete={res => setLastMeasure(res)}
             onAreaComplete={res => setLastArea(res)}
-            onSelectEntity={ent => setSelectedEntity(ent)}
+            onSelectEntity={handleSelectEntity}
             onModelChange={triggerUpdate}
             onLogMessage={addLog}
           />
         </div>
 
-        {/* 우측 속성/통계 및 측정 결과 패널 */}
-        <PropertyPanel
-          model={modelRef.current}
-          lastMeasure={lastMeasure}
-          lastArea={lastArea}
-          selectedEntity={selectedEntity}
-          theme={theme}
-          onLayerToggle={handleLayerToggle}
-        />
+        {/* 우측 속성/통계 및 측정 결과 패널: 개체를 눌렀을 때(또는 속성 버튼)만 표시 */}
+        {infoOpen && (
+          <div style={{ position: 'relative', display: 'flex' }}>
+            <PropertyPanel
+              model={modelRef.current}
+              lastMeasure={lastMeasure}
+              lastArea={lastArea}
+              selectedEntity={selectedEntity}
+              theme={theme}
+              onLayerToggle={handleLayerToggle}
+            />
+            <button
+              onClick={handleCloseInfo}
+              aria-label="속성창 닫기"
+              style={{ position: 'absolute', top: 4, right: 6, width: 24, height: 24, border: 'none', background: 'transparent', color: isLight ? '#57606a' : '#8b949e', fontSize: 14, cursor: 'pointer' }}
+            >✕</button>
+          </div>
+        )}
       </div>
 
       {/* 3. 하단 AutoCAD 스타일 명령줄 콘솔 */}

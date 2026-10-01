@@ -45,12 +45,12 @@ export const MobileTopBar: React.FC<MobileTopBarProps> = ({
   return (
     <div
       style={{
-        display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px',
-        paddingTop: 'max(4px, env(safe-area-inset-top))',
+        display: 'flex', alignItems: 'center', gap: 4, padding: '3px 6px',
+        paddingTop: 'max(3px, env(safe-area-inset-top))',
         backgroundColor: c.bar, borderBottom: `1px solid ${c.border}`, color: c.text, userSelect: 'none'
       }}
     >
-      <div style={{ fontWeight: 'bold', fontSize: 14, color: '#58a6ff', flex: 1, whiteSpace: 'nowrap' }}>📐 Web CAD</div>
+      <div style={{ fontWeight: 'bold', fontSize: 13, color: '#58a6ff', flex: 1, whiteSpace: 'nowrap' }}>📐 Web CAD</div>
       <input
         type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".dxf,.dwg"
         onChange={e => { const f = e.target.files?.[0]; if (f) onOpenFile(f); e.target.value = ''; }}
@@ -96,8 +96,8 @@ export const MobileMenu: React.FC<MobileMenuProps> = p => {
       onClick={onClick}
       style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%',
-        minHeight: 44, padding: '0 14px', border: 'none', borderBottom: `1px solid ${c.border}`,
-        backgroundColor: 'transparent', color: danger ? '#f85149' : c.text, fontSize: 14, textAlign: 'left'
+        minHeight: 38, padding: '0 12px', border: 'none', borderBottom: `1px solid ${c.border}`,
+        backgroundColor: 'transparent', color: danger ? '#f85149' : c.text, fontSize: 13, textAlign: 'left'
       }}
     >
       <span>{label}</span>
@@ -151,8 +151,8 @@ export const MobileToolBar: React.FC<MobileToolBarProps> = ({ theme, mode, setMo
   return (
     <div
       style={{
-        display: 'flex', alignItems: 'center', gap: 2, padding: '4px 4px',
-        paddingBottom: 'max(4px, env(safe-area-inset-bottom))',
+        display: 'flex', alignItems: 'center', gap: 1, padding: '2px 2px',
+        paddingBottom: 'max(2px, env(safe-area-inset-bottom))',
         backgroundColor: c.bar, borderTop: `1px solid ${c.border}`, userSelect: 'none'
       }}
     >
@@ -163,12 +163,12 @@ export const MobileToolBar: React.FC<MobileToolBarProps> = ({ theme, mode, setMo
             key={t.mode}
             onClick={() => setMode(t.mode)}
             style={{
-              flex: '1 1 0', minWidth: 0, height: 52, display: 'flex', flexDirection: 'column', alignItems: 'center',
-              justifyContent: 'center', gap: 2, padding: 0, border: 'none', borderRadius: 8,
-              backgroundColor: active ? (t.color || '#1f6feb') : 'transparent', color: active ? '#fff' : c.text, fontSize: 10
+              flex: '1 1 0', minWidth: 0, height: 40, display: 'flex', flexDirection: 'column', alignItems: 'center',
+              justifyContent: 'center', gap: 1, padding: 0, border: 'none', borderRadius: 6,
+              backgroundColor: active ? (t.color || '#1f6feb') : 'transparent', color: active ? '#fff' : c.text, fontSize: 9
             }}
           >
-            <span style={{ fontSize: 20, lineHeight: 1 }}>{t.icon}</span>
+            <span style={{ fontSize: 15, lineHeight: 1 }}>{t.icon}</span>
             <span>{t.label}</span>
           </button>
         );
@@ -194,14 +194,14 @@ export const MobileActionStack: React.FC<MobileActionStackProps> = ({ theme, onZ
       onClick={onClick}
       aria-label={label}
       style={{
-        width: 44, height: 44, borderRadius: 22, fontSize: 18, border: `1px solid ${c.border}`,
+        width: 34, height: 34, borderRadius: 17, fontSize: 15, border: `1px solid ${c.border}`,
         backgroundColor: theme === 'LIGHT' ? 'rgba(255,255,255,0.92)' : 'rgba(32,36,40,0.88)', color: c.text,
         boxShadow: '0 2px 6px rgba(0,0,0,0.3)'
       }}
     >{icon}</button>
   );
   return (
-    <div style={{ position: 'absolute', right: 8, top: 40, zIndex: 5, display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div style={{ position: 'absolute', right: 8, top: 36, zIndex: 5, display: 'flex', flexDirection: 'column', gap: 6 }}>
       {btn('🔍', '전체 맞춤', onZoomExtents)}
       {btn('↩️', '실행 취소', onUndo)}
       {btn('↪️', '다시 실행', onRedo)}
@@ -211,6 +211,6 @@ export const MobileActionStack: React.FC<MobileActionStackProps> = ({ theme, onZ
 };
 
 const iconBtn = (bg: string, color: string, border: string): React.CSSProperties => ({
-  width: 44, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
-  fontSize: 18, backgroundColor: bg, color, border: `1px solid ${border}`, borderRadius: 8, cursor: 'pointer'
+  width: 36, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  fontSize: 15, backgroundColor: bg, color, border: `1px solid ${border}`, borderRadius: 6, cursor: 'pointer'
 });

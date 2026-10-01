@@ -18,6 +18,12 @@ export interface IsolatedParseResult {
   skippedEntities?: Record<string, number>;
   entities: any[];
   boundingBox: any;
+  /**
+   * 대용량 도면 모드: 선분을 개체 객체 대신 (레이어, 색)별 좌표 묶음으로 전달한다.
+   * data는 [x1,y1,x2,y2,...] Float32 배열(origin 기준 상대 좌표)을 base64로 인코딩한 문자열.
+   */
+  lineBatches?: Array<{ layer: string; color: string; count: number; data: string }>;
+  lineOrigin?: { x: number; y: number };
 }
 
 const BIN_DIR = path.resolve(process.cwd(), 'bin');
@@ -26,6 +32,15 @@ const DXF2DWG_EXE = path.join(BIN_DIR, 'dxf2dwg.exe');
 const DWGREWRITE_EXE = path.join(BIN_DIR, 'dwgrewrite.exe');
 
 type Pt = { x: number; y: number };
+
+// 대용량 도면 모드에서 곡선(호·타원·스플라인)을 크기에 맞춰 적게 나눈다.
+// (작은 곡선을 촘촘히 나누면 눈에 보이지 않는 선분이 수백만 개로 늘어난다)
+let coarseTessellation = false;
+const CHORD_TOLERANCE = 0.02; // 허용 오차(도면 단위)
+function coarseArcSegments(radius: number, sweep: number, minSegs: number): number {
+  const step = radius > CHORD_TOLERANCE ? Math.min(Math.PI / 24, 2 * Math.acos(1 - CHORD_TOLERANCE / radius)) : Math.PI / 2;
+  return Math.max(minSegs, Math.ceil(sweep / step));
+}
 
 // AutoCAD ACI(AutoCAD Color Index) 256색 표 (1~255번, 색상당 RRGGBB 6자리)
 // 출처: ezdxf(MIT License) DXF_DEFAULT_COLORS - AutoCAD 2020 모델 공간 팔레트(어두운 배경 기준)
@@ -61,7 +76,7 @@ const TWO_PI = Math.PI * 2;
 function arcPoints(cx: number, cy: number, r: number, a0: number, a1: number): Pt[] {
   let sweep = a1 - a0;
   while (sweep <= 1e-9) sweep += TWO_PI;
-  const segs = Math.max(8, Math.ceil((sweep * 180) / Math.PI / 7.5));
+  const segs = coarseTessellation ? coarseArcSegments(r, sweep, 4) : Math.max(8, Math.ceil((sweep * 180) / Math.PI / 7.5));
   const pts: Pt[] = [];
   for (let i = 0; i <= segs; i++) {
     const a = a0 + (sweep * i) / segs;
@@ -74,7 +89,9 @@ function arcPoints(cx: number, cy: number, r: number, a0: number, a1: number): P
 function ellipsePoints(c: Pt, majorEnd: Pt, ratio: number, a0: number, a1: number): Pt[] {
   let sweep = a1 - a0;
   while (sweep <= 1e-9) sweep += TWO_PI;
-  const segs = Math.max(16, Math.ceil((sweep / TWO_PI) * 64));
+  const segs = coarseTessellation
+    ? coarseArcSegments(Math.hypot(majorEnd.x, majorEnd.y), sweep, 8)
+    : Math.max(16, Math.ceil((sweep / TWO_PI) * 64));
   const minor = { x: -majorEnd.y * ratio, y: majorEnd.x * ratio };
   const pts: Pt[] = [];
   for (let i = 0; i <= segs; i++) {
@@ -126,7 +143,13 @@ function splinePoints(degree: number, knots: number[], ctrl: Pt[], weights?: num
   const p = degree;
   if (!Array.isArray(knots) || knots.length !== n + p + 1 || n <= p) return ctrl.map(c => ({ x: c.x, y: c.y }));
 
-  const samples = Math.min(400, Math.max(32, n * 4));
+  let samples = Math.min(400, Math.max(32, n * 4));
+  if (coarseTessellation) {
+    // 곡선이 작을수록 적은 점으로 충분하다: 제어점 다각형 길이에 비례해 점 개수를 정한다
+    let polyLen = 0;
+    for (let i = 1; i < n; i++) polyLen += Math.hypot(ctrl[i].x - ctrl[i - 1].x, ctrl[i].y - ctrl[i - 1].y);
+    samples = Math.min(300, Math.max(6, n * 2, Math.ceil(2 * Math.sqrt(polyLen))));
+  }
   const t0 = knots[p];
   const t1 = knots[n];
   const pts: Pt[] = [];
@@ -218,9 +241,64 @@ const HANDLED_TYPES = new Set([
  * DXF 텍스트를 뷰어용 엔티티 목록으로 변환한다 (INSERT 블록 전개, 색·레이어 해석, HATCH/ELLIPSE/MTEXT 처리).
  * 처리하지 못하는 개체 종류는 skippedEntities에 종류별 개수로 기록한다. DXF를 해석할 수 없으면 null.
  */
-export function parseDxfText(dxfContent: string): IsolatedParseResult | null {
-  // dxf-json: HATCH / ATTRIB / ELLIPSE / MTEXT 정렬 정보까지 읽는 파서
+export function parseDxfText(
+  dxfContent: string,
+  // compactLines: true  = 선분을 좌표 묶음(lineBatches)으로 전달하는 대용량 모드
+  //               'auto' = 전개 후 개체 수가 COMPACT_THRESHOLD를 넘으면 대용량 모드
+  //               false  = 기존 방식(개체 객체). 너무 크면 오류
+  options: { compactLines?: boolean | 'auto' } = {}
+): IsolatedParseResult | null {
   const parsed: any = new DxfParser().parseSync(dxfContent);
+  const mode = options.compactLines ?? false;
+  let compact = mode === true;
+  if (mode === 'auto' || mode === false) {
+    const est = parsed && parsed.blocks ? estimateExpandedObjects(parsed) : 0;
+    if (mode === 'auto') compact = est > COMPACT_THRESHOLD;
+    else if (est > MAX_OBJECTS_NORMAL_MODE) {
+      const err: any = new Error(`도면이 너무 커서(개체 약 ${est.toLocaleString()}개) 이 방식으로는 열 수 없습니다. 웹 뷰어(대용량 모드)에서 여세요.`);
+      err.largeDrawing = true;
+      throw err;
+    }
+  }
+  coarseTessellation = compact;
+  try {
+    return parseDxfParsed(parsed, compact);
+  } finally {
+    coarseTessellation = false;
+  }
+}
+
+// 블록(INSERT) 전개 후의 개체 수 추정 (곡선 분할 전). 대용량 모드 전환 여부 판단에 쓴다.
+const COMPACT_THRESHOLD = 150_000;
+const MAX_OBJECTS_NORMAL_MODE = 800_000;
+function estimateExpandedObjects(parsed: any): number {
+  const blocks = parsed.blocks || {};
+  const memo = new Map<string, number>();
+  const count = (ents: any[], depth: number): number => {
+    let n = 0;
+    for (const e of ents) {
+      if (e.type === 'INSERT') {
+        if (depth < 8 && blocks[e.name]) n += blockSize(e.name, depth + 1);
+      } else if (e.type === 'DIMENSION') {
+        if (depth < 8 && e.name && blocks[e.name]) n += count(blocks[e.name].entities || [], depth + 1);
+      } else {
+        n++;
+      }
+    }
+    return n;
+  };
+  const blockSize = (name: string, depth: number): number => {
+    const key = `${name}@${depth}`;
+    const hit = memo.get(key);
+    if (hit !== undefined) return hit;
+    const v = count(blocks[name].entities || [], depth);
+    memo.set(key, v);
+    return v;
+  };
+  return count(parsed.entities || [], 0);
+}
+
+function parseDxfParsed(parsed: any, compact: boolean): IsolatedParseResult | null {
 
           if (parsed && Array.isArray(parsed.entities)) {
             const entities: any[] = [];
@@ -243,6 +321,29 @@ export function parseDxfText(dxfContent: string): IsolatedParseResult | null {
             type Tf = { x: number; y: number; scaleX: number; scaleY: number; rotationRad: number };
             type Ctx = { layer?: string; byBlockColor?: string };
             const round = (n: number) => Number(n.toFixed(4));
+
+            // 대용량 모드: (레이어, 색)별로 선분 좌표를 쌓는 증가형 버퍼
+            type Bucket = { layer: string; color: string; buf: Float64Array; n: number };
+            const buckets = new Map<string, Bucket>();
+            let sMinX = Infinity, sMinY = Infinity, sMaxX = -Infinity, sMaxY = -Infinity;
+            const addBucketLine = (layer: string, color: string, x1: number, y1: number, x2: number, y2: number) => {
+              const key = `${layer}\u0000${color}`;
+              let b = buckets.get(key);
+              if (!b) {
+                b = { layer, color, buf: new Float64Array(4096), n: 0 };
+                buckets.set(key, b);
+              }
+              if (b.n + 4 > b.buf.length) {
+                const grown = new Float64Array(b.buf.length * 2);
+                grown.set(b.buf);
+                b.buf = grown;
+              }
+              b.buf[b.n++] = x1; b.buf[b.n++] = y1; b.buf[b.n++] = x2; b.buf[b.n++] = y2;
+              if (x1 < sMinX) sMinX = x1; if (x2 < sMinX) sMinX = x2;
+              if (y1 < sMinY) sMinY = y1; if (y2 < sMinY) sMinY = y2;
+              if (x1 > sMaxX) sMaxX = x1; if (x2 > sMaxX) sMaxX = x2;
+              if (y1 > sMaxY) sMaxY = y1; if (y2 > sMaxY) sMaxY = y2;
+            };
 
             const blocks = parsed.blocks || {};
 
@@ -280,6 +381,13 @@ export function parseDxfText(dxfContent: string): IsolatedParseResult | null {
               const pushLine = (a: Pt, b: Pt) => {
                 const p1 = tf(a);
                 const p2 = tf(b);
+                if (compact) {
+                  // 대용량 모드: 개체 객체를 만들지 않고 (레이어, 색)별 좌표 묶음에 쌓는다. 보이지 않을 만큼 짧은 선분은 버린다.
+                  if (Math.abs(p1.x - p2.x) < 1e-4 && Math.abs(p1.y - p2.y) < 1e-4) return;
+                  addBucketLine(layer, entColor, p1.x, p1.y, p2.x, p2.y);
+                  lineCount++;
+                  return;
+                }
                 entities.push({
                   id: `line_${nextId++}`,
                   type: 'LINE',
@@ -502,6 +610,30 @@ export function parseDxfText(dxfContent: string): IsolatedParseResult | null {
               }
             }
 
+            // 대용량 모드: 좌표 묶음을 도면 범위의 중심 기준 상대 좌표(Float32)로 바꿔 base64로 인코딩
+            let lineBatches: IsolatedParseResult['lineBatches'];
+            let lineOrigin: { x: number; y: number } | undefined;
+            if (compact && buckets.size > 0) {
+              minX = Math.min(minX, sMinX); minY = Math.min(minY, sMinY);
+              maxX = Math.max(maxX, sMaxX); maxY = Math.max(maxY, sMaxY);
+              lineOrigin = { x: Math.round((sMinX + sMaxX) / 2), y: Math.round((sMinY + sMaxY) / 2) };
+              lineBatches = [];
+              for (const b of buckets.values()) {
+                const f32 = new Float32Array(b.n);
+                for (let i = 0; i < b.n; i += 2) {
+                  f32[i] = b.buf[i] - lineOrigin.x;
+                  f32[i + 1] = b.buf[i + 1] - lineOrigin.y;
+                }
+                lineBatches.push({
+                  layer: b.layer,
+                  color: b.color,
+                  count: b.n / 4,
+                  data: Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength).toString('base64')
+                });
+                b.buf = new Float64Array(0); // 메모리 즉시 반환
+              }
+            }
+
             const boundingBox = (isFinite(minX) && isFinite(minY) && isFinite(maxX) && isFinite(maxY)) ? {
               minX: Number(minX.toFixed(4)),
               minY: Number(minY.toFixed(4)),
@@ -524,10 +656,25 @@ export function parseDxfText(dxfContent: string): IsolatedParseResult | null {
               layerColors: layersMap,
               skippedEntities: skipped,
               entities,
-              boundingBox
+              boundingBox,
+              ...(lineBatches ? { lineBatches, lineOrigin } : {})
             };
           }
   return null;
+}
+
+/**
+ * dwg2dxf(LibreDWG)가 만든 DXF 보정.
+ * 긴 MTEXT 문자열 안의 줄바꿈(LF)을 그대로 써서 DXF의 (그룹 코드, 값) 짝이 어긋나는 경우가 있고, 변환할 때마다
+ * 결과가 달라져 같은 도면이 열렸다 안 열렸다 한다("String '20' cannot be cast to Boolean type"). 정상적인 줄 끝은
+ * 모두 CRLF이므로, 앞에 CR이 없는 LF는 문자열 안의 줄바꿈으로 보고 공백으로 바꾼다.
+ * (LF만 쓰는 DXF는 건드리지 않는다)
+ */
+export function repairDxfLineBreaks(text: string): string {
+  const CR = String.fromCharCode(13);
+  const LF = String.fromCharCode(10);
+  if (!text.slice(0, 4096).includes(CR + LF)) return text;
+  return text.replace(new RegExp('(?<!' + CR + ')' + LF, 'g'), ' ');
 }
 
 /**
@@ -537,7 +684,8 @@ export function parseDwgIsolated(
   buffer: Buffer | ArrayBuffer,
   // cliFallback=false: 변환 실패 시 CLI(agent-cli.js)를 다시 호출하지 않고 오류로 종료
   // (CLI가 이 함수를 호출하는 경우 무한 재귀를 막기 위해 사용)
-  options: { cliFallback?: boolean } = {}
+  // compactLines: 대용량 도면 처리 방식 (parseDxfText 참고). 웹 서버는 'auto', CLI는 false(기본)
+  options: { cliFallback?: boolean; compactLines?: boolean | 'auto' } = {}
 ): IsolatedParseResult {
   const tempDir = path.resolve(process.cwd(), '.cad_temp');
   if (!fs.existsSync(tempDir)) {
@@ -556,9 +704,10 @@ export function parseDwgIsolated(
     // 1단계: bin/dwg2dxf.exe를 사용하여 모든 블록과 표제란을 완전체로 전개한 DXF 추출
     if (fs.existsSync(DWG2DXF_EXE)) {
       try {
+        // 큰 도면(수십 MB)은 변환에 시간이 걸리므로 넉넉히 기다린다
         execFileSync(DWG2DXF_EXE, ['-v0', tempDwgPath, '-o', tempDxfPath], {
           encoding: 'utf-8',
-          timeout: 30000,
+          timeout: 300000,
           maxBuffer: 100 * 1024 * 1024
         });
 
@@ -567,11 +716,13 @@ export function parseDwgIsolated(
           const currentBaseDxfPath = path.join(tempDir, '.current_base.dxf');
           try { fs.copyFileSync(tempDxfPath, currentBaseDxfPath); } catch (_) {}
 
-          const dxfContent = fs.readFileSync(tempDxfPath, 'utf-8');
-          const result = parseDxfText(dxfContent);
+          const dxfContent = repairDxfLineBreaks(fs.readFileSync(tempDxfPath, 'utf-8'));
+          const result = parseDxfText(dxfContent, { compactLines: options.compactLines ?? false });
           if (result) return result;
         }
-      } catch (fullDxfErr) {
+      } catch (fullDxfErr: any) {
+        // 도면이 너무 커서 이 방식으로 열 수 없는 경우는 다른 방법으로 넘기지 않고 이유를 그대로 알린다
+        if (fullDxfErr?.largeDrawing) throw fullDxfErr;
         console.warn('dwg2dxf full conversion warning:', fullDxfErr);
       }
     }

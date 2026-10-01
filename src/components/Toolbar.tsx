@@ -19,6 +19,8 @@ interface ToolbarProps {
   onExport: () => void;
   onClear: () => void;
   onZoomExtents?: () => void;
+  infoOpen?: boolean;
+  onToggleInfo?: () => void;
   onZoomIn?: () => void;
   onZoomOut?: () => void;
 }
@@ -41,6 +43,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onExport,
   onClear,
   onZoomExtents,
+  infoOpen,
+  onToggleInfo,
   onZoomIn,
   onZoomOut
 }) => {
@@ -226,6 +230,16 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         >
           격자(F7): {gridEnabled ? 'ON' : 'OFF'}
         </button>
+
+        {onToggleInfo && (
+          <button
+            onClick={onToggleInfo}
+            style={toggleBtnStyle(!!infoOpen, isLight)}
+            title="속성창 보기/숨기기 (개체를 누르면 자동으로 나타납니다)"
+          >
+            ℹ️ 속성
+          </button>
+        )}
 
         <button
           onClick={() => setTheme(t => t === 'DARK' ? 'LIGHT' : 'DARK')}
