@@ -288,42 +288,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // DWG 내보내기 (실험적: LibreDWG로 생성되어 일부 뷰어에서 열리지 않을 수 있음)
-  const handleExportDwg = async () => {
-    try {
-      addLog('DWG 바이너리 도면 생성 중...');
-      const dxfContent = modelRef.current.exportDxf();
-      const res = await fetch('/api/export-dwg', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dxf: dxfContent })
-      });
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.message || `서버 오류 (${res.status})`);
-      }
-      const exportMode = res.headers.get('X-Export-Mode');
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `cad_drawing_${Date.now()}.dwg`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      addLog('✓ DWG 파일 다운로드 완료.');
-      if (exportMode === 'rewrite-original') {
-        addLog('⚠ 열어 둔 원본 DWG를 다시 쓴 파일이라, 열기 이후의 편집 내용은 반영되지 않았습니다. 편집을 보존하려면 DXF로 저장하세요.');
-      }
-      addLog('⚠ 이 DWG는 오픈소스 엔진(LibreDWG)으로 만들어져 DWG FastView 등 일부 뷰어에서 열리지 않을 수 있습니다. 열리지 않으면 DXF 저장을 사용하세요.');
-    } catch (err: any) {
-      console.error('DWG export error:', err);
-      addLog(`❌ DWG 내보내기 실패: ${err.message || err}`);
-    }
-  };
-
   const handleClear = () => {
     modelRef.current.clear();
     setLastMeasure(null);
@@ -368,7 +332,6 @@ export const App: React.FC = () => {
         onOpenFile={handleOpenFile}
         onLoadSample={loadDefaultSample}
         onExport={handleExport}
-        onExportDwg={handleExportDwg}
         onClear={handleClear}
         onZoomExtents={triggerZoomExtents}
       />

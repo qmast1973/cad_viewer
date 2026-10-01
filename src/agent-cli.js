@@ -8,8 +8,6 @@ import { execFileSync } from 'child_process';
 
 const BIN_DIR = path.resolve(process.cwd(), 'bin');
 const DWG2DXF_EXE = path.join(BIN_DIR, 'dwg2dxf.exe');
-const DXF2DWG_EXE = path.join(BIN_DIR, 'dxf2dwg.exe');
-const DWGREWRITE_EXE = path.join(BIN_DIR, 'dwgrewrite.exe');
 
 const ACI_COLOR_MAP = {
   1: '#FF0000', // Red (SHEET)
@@ -822,86 +820,18 @@ async function main() {
       const resultDxf = d.toDxfString();
 
       if (outputPath.toLowerCase().endsWith('.dwg')) {
-        const tempDir = path.resolve(process.cwd(), '.cad_temp');
-        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-        const currentSourceDwg = path.join(tempDir, '.current_source.dwg');
-
-        // 1순위: 원본 DWG를 dwgrewrite로 다시 써서 DWG 생성 (AC1015, 편집 내용은 반영되지 않음)
-        if (fs.existsSync(DWGREWRITE_EXE) && fs.existsSync(currentSourceDwg)) {
-          if (fs.existsSync(outputPath)) try { fs.unlinkSync(outputPath); } catch (_) {}
-          execFileSync(DWGREWRITE_EXE, ['-v0', currentSourceDwg, outputPath], { encoding: 'utf-8', timeout: 30000 });
-          if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
-            const dwgStat = fs.statSync(outputPath);
-            console.log(JSON.stringify({
-              status: 'success',
-              savedFile: outputPath,
-              entitiesWritten: state.entities.length,
-              bytes: dwgStat.size,
-              format: 'DWG (AC1015, LibreDWG 생성)',
-              mode: 'rewrite-original',
-              warnings: [
-                '열어 둔 원본 DWG를 다시 쓴 파일이며, 열기 이후의 편집(line, circle 등)은 반영되지 않았습니다. 편집을 보존하려면 .dxf로 저장하세요.',
-                '이 DWG는 LibreDWG로 생성되어 DWG FastView 등 일부 뷰어에서 열리지 않을 수 있습니다.'
-              ]
-            }, null, 2));
-            break;
-          }
-        }
-
-        const prefix = `cli_export_${Date.now()}`;
-        const tempDxfPath = path.join(tempDir, `${prefix}.dxf`);
-
-        const currentBaseDxf = path.join(tempDir, '.current_base.dxf');
-        const templateDxf = path.resolve(process.cwd(), 'src/templates/acad_template.dxf');
-        const baseSource = fs.existsSync(currentBaseDxf) ? currentBaseDxf : (fs.existsSync(templateDxf) ? templateDxf : null);
-
-        let finalDxf = resultDxf;
-        if (baseSource) {
-          try {
-            const tmplContent = fs.readFileSync(baseSource, 'utf-8');
-            const entitiesPos = tmplContent.indexOf('ENTITIES\r\n');
-            const endsecPos = tmplContent.indexOf('\r\n  0\r\nENDSEC', entitiesPos);
-            if (entitiesPos !== -1 && endsecPos !== -1) {
-              const headerPart = tmplContent.substring(0, entitiesPos + 'ENTITIES\r\n'.length);
-              const objectsPart = tmplContent.substring(endsecPos);
-
-              const sPos = resultDxf.indexOf('ENTITIES\n') !== -1 ? resultDxf.indexOf('ENTITIES\n') + 9 : (resultDxf.indexOf('ENTITIES\r\n') !== -1 ? resultDxf.indexOf('ENTITIES\r\n') + 10 : 0);
-              const sEnd = resultDxf.indexOf('\n0\nENDSEC', sPos) !== -1 ? resultDxf.indexOf('\n0\nENDSEC', sPos) : (resultDxf.indexOf('\r\n  0\r\nENDSEC', sPos) !== -1 ? resultDxf.indexOf('\r\n  0\r\nENDSEC', sPos) : resultDxf.length);
-
-              const entText = resultDxf.substring(sPos, sEnd).replace(/\r?\n/g, '\r\n');
-              finalDxf = headerPart + entText + objectsPart;
-            }
-          } catch (tmplErr) {
-            console.warn('DXF template merge warning:', tmplErr);
-          }
-        }
-
-        fs.writeFileSync(tempDxfPath, finalDxf, 'utf-8');
-        try {
-          execFileSync(DXF2DWG_EXE, ['-y', '-v0', tempDxfPath, '-o', outputPath], { encoding: 'utf-8', timeout: 30000 });
-          const dwgStat = fs.statSync(outputPath);
-          console.log(JSON.stringify({
-            status: 'success',
-            savedFile: outputPath,
-            entitiesWritten: state.entities.length,
-            bytes: dwgStat.size,
-            format: 'DWG (AC1015, LibreDWG 생성)',
-            mode: 'dxf2dwg',
-            warnings: ['이 DWG는 LibreDWG로 생성되어 DWG FastView 등 일부 뷰어에서 열리지 않을 수 있습니다. 열리지 않으면 .dxf로 저장하세요.']
-          }, null, 2));
-        } finally {
-          if (fs.existsSync(tempDxfPath)) try { fs.unlinkSync(tempDxfPath); } catch (_) {}
-        }
-      } else {
-        fs.writeFileSync(outputPath, resultDxf, 'utf-8');
-        console.log(JSON.stringify({
-          status: 'success',
-          savedFile: outputPath,
-          entitiesWritten: state.entities.length,
-          bytes: resultDxf.length,
-          format: 'DXF (dxf-writer 생성, HATCH는 채움 없이 경계선 폴리라인으로 저장)'
-        }, null, 2));
+        // DWG 저장은 지원하지 않는다 (LibreDWG가 만든 DWG는 개체가 대량 유실되거나 FastView에서 열리지 않음)
+        console.error(JSON.stringify({ status: 'error', message: 'DWG 저장은 지원하지 않습니다. 출력 파일 확장자를 .dxf로 지정하세요.' }));
+        process.exit(1);
       }
+      fs.writeFileSync(outputPath, resultDxf, 'utf-8');
+      console.log(JSON.stringify({
+        status: 'success',
+        savedFile: outputPath,
+        entitiesWritten: state.entities.length,
+        bytes: resultDxf.length,
+        format: 'DXF (dxf-writer 생성, HATCH는 채움 없이 경계선 폴리라인으로 저장)'
+      }, null, 2));
       break;
     }
 

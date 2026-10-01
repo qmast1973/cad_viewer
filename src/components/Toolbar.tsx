@@ -17,7 +17,6 @@ interface ToolbarProps {
   onOpenFile: (file: File) => void;
   onLoadSample: () => void;
   onExport: () => void;
-  onExportDwg?: () => void;
   onClear: () => void;
   onZoomExtents?: () => void;
   onZoomIn?: () => void;
@@ -40,7 +39,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onOpenFile,
   onLoadSample,
   onExport,
-  onExportDwg,
   onClear,
   onZoomExtents,
   onZoomIn,
@@ -108,16 +106,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         >
           💾 DXF 저장
         </button>
-
-        {onExportDwg && (
-          <button
-            onClick={onExportDwg}
-            style={{ ...btnStyle(isLight), backgroundColor: '#1f6feb', borderColor: '#388bfd', color: '#fff' }}
-            title="DWG로 저장 (오픈소스 엔진으로 생성되어 DWG FastView 등 일부 뷰어에서 열리지 않을 수 있음 - DXF 저장 권장)"
-          >
-            💾 DWG 저장 (실험적)
-          </button>
-        )}
 
         <button
           onClick={onClear}
