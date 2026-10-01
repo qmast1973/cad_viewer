@@ -116,6 +116,8 @@ export class DwgLoader {
           const errJson = await response.json();
           if (errJson && typeof errJson.message === 'string') this.lastServerError = errJson.message;
         } catch (_) {}
+        // 서버가 이유를 주지 않았다면 이 주소에는 변환 서버가 없는 것이다 (GitHub Pages 같은 정적 배포)
+        if (!this.lastServerError) this.lastServerError = `이 주소에는 DWG 변환 서버가 없습니다 (HTTP ${response.status})`;
         if (this.lastServerError && this.lastServerError.includes('너무 커서')) throw new Error(this.lastServerError);
       }
       if (response.ok) {
@@ -135,6 +137,7 @@ export class DwgLoader {
       }
     } catch (apiErr: any) {
       if (apiErr && typeof apiErr.message === 'string' && apiErr.message.includes('너무 커서')) throw apiErr;
+      this.lastServerError = `DWG 변환 서버에 연결하지 못했습니다 (${apiErr?.message || apiErr})`;
       console.warn('Backend parse-dwg API call failed, falling back to client-side WASM:', apiErr);
     }
 

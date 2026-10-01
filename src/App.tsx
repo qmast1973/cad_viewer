@@ -240,10 +240,19 @@ export const App: React.FC = () => {
               await parseAsDxf(buffer, 'DXF 자동 처리');
               return;
             } catch (_) {
-              const why = DwgLoader.lastServerError ? `
-서버 변환 결과: ${DwgLoader.lastServerError}` : `
-내장 엔진 결과: ${String(dwgErr.message || '').replace('DWG_PARSE_FAILED|', '')}`;
-              throw new Error(`DWG와 DXF 모두 로드 실패. 올바른 CAD 파일인지 확인하십시오.${why}`);
+              const serverMsg = DwgLoader.lastServerError;
+              const engineMsg = String(dwgErr.message || '').replace('DWG_PARSE_FAILED|', '');
+              const noServer = !!serverMsg && (serverMsg.includes('변환 서버가 없습니다') || serverMsg.includes('연결하지 못했습니다'));
+              const lines = ['DWG와 DXF 모두 로드 실패.'];
+              if (serverMsg) lines.push(`서버 변환 결과: ${serverMsg}`);
+              lines.push(`내장 엔진 결과: ${engineMsg}`);
+              // 변환 서버가 없는 주소(예: GitHub Pages)에서는 큰 DWG를 내장 엔진으로 열 수 없다
+              if (noServer || file.size > 5 * 1024 * 1024) {
+                lines.push('→ 큰 DWG는 변환 서버가 있는 로컬 실행(npm run dev)에서만 열립니다. 웹 배포 주소에서는 열 수 없습니다.');
+              } else {
+                lines.push('→ 올바른 CAD 파일인지 확인하십시오.');
+              }
+              throw new Error(lines.join('\n'));
             }
           }
           throw dwgErr;
