@@ -306,11 +306,11 @@ export const App: React.FC = () => {
 
   return (
     <div
+      className="app-root"
       style={{
         display: 'flex',
         flexDirection: 'column',
-        width: '100vw',
-        height: '100vh',
+        width: '100%',
         overflow: 'hidden',
         backgroundColor: isLight ? '#f6f8fa' : '#161b22'
       }}

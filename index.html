@@ -10,14 +10,19 @@
         margin: 0;
         padding: 0;
       }
+      /* 모바일 브라우저는 주소창이 보일 때 100vh가 실제 화면보다 커서 위·아래가 가려진다.
+         dvh(보이는 영역 기준)를 지원하면 그 값을 쓰고, 아니면 100vh로 대체한다. */
       body, html, #root {
         width: 100%;
-        height: 100%;
+        height: 100vh;
+        height: 100dvh;
         overflow: hidden;
         background-color: #1a1a1a;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         color: #e0e0e0;
       }
+      #root { position: fixed; top: 0; left: 0; }
+      .app-root { height: 100%; }
     </style>
   </head>
   <body>
