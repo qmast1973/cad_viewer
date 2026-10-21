@@ -114,6 +114,24 @@ async def main():
             await shot('tools_measure.png')
             await ev("window.cadTools.setTool(null); window.cadTools.clearRecords()")
 
+            # 마우스 이동 시 좌표 표시 + 휠은 커서 위치 기준 확대
+            await ev("window.cadViewer.fit()"); await asyncio.sleep(0.5)
+            rect = await ev("(()=>{const r=document.querySelector('#cad-canvas').getBoundingClientRect();return [r.left,r.top,r.width,r.height]})()")
+            mx, my = rect[0] + rect[2] / 2 + 230, rect[1] + rect[3] / 2 + 90
+            await send('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': mx, 'y': my})
+            await asyncio.sleep(0.4)
+            ctext = await ev("document.getElementById('status-coord').textContent")
+            check("마우스를 움직이면 상태줄에 X·Y 좌표가 나옴", ctext and ctext.startswith('X:') and '-' != ctext.split()[1], ctext)
+            before = await ev("document.getElementById('status-coord').textContent")
+            zc0 = await ev("window.cadViewer.app.camera.position.z")
+            await send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': mx, 'y': my, 'deltaX': 0, 'deltaY': -400})
+            await asyncio.sleep(1.0)
+            after = await ev("document.getElementById('status-coord').textContent")
+            zc1 = await ev("window.cadViewer.app.camera.position.z")
+            dxy = [abs(float(before.split()[i]) - float(after.split()[i])) for i in (1, 3)]
+            check("휠로 확대되고 커서 아래 좌표는 그대로(커서 위치 기준 확대)", zc1 < zc0 * 0.9 and max(dxy) < 3, (zc0, zc1, before, after))
+            await ev("window.cadViewer.fit()"); await asyncio.sleep(0.4)
+
             # 영역 확대 / 이전 보기
             b = await ev("(()=>{const a=window.cadViewer.app;const o=a.lite.head.origin;const f=a.fitBox;return [f.min.x+o[0],f.min.y+o[1],f.max.x+o[0],f.max.y+o[1]]})()")
             z0 = await ev("window.cadViewer.app.camera.position.z")

@@ -181,6 +181,24 @@
       T.dirty = true; renderPanel();
     }
 
+    // ── 마우스: 휠은 커서 위치 기준으로 확대·축소, 아래 상태줄에 커서의 도면 좌표를 실시간 표시 ──
+    app.controls.zoomToCursor = true;
+    const coordEl = document.createElement('span'); coordEl.id = 'status-coord'; coordEl.style.cssText = 'font-variant-numeric:tabular-nums;color:var(--accent-color);min-width:200px';
+    coordEl.textContent = 'X: - Y: -';
+    const fi = document.querySelector('.footer-info'); if (fi) fi.insertBefore(coordEl, fi.firstChild);
+    let coordRaf = 0, lastPt = null;
+    function showCoord() {
+      coordRaf = 0; if (!lastPt || !app.lite) { coordEl.textContent = 'X: - Y: -'; return; }
+      const [wx, wy] = s2w(lastPt[0], lastPt[1]); const o = origin();
+      coordEl.textContent = `X: ${(wx + o[0]).toFixed(2)}  Y: ${(wy + o[1]).toFixed(2)}`;
+    }
+    app.renderer.domElement.addEventListener('pointermove', (e) => {
+      const r = e.currentTarget.getBoundingClientRect(); lastPt = [e.clientX - r.left, e.clientY - r.top];
+      if (!coordRaf) coordRaf = requestAnimationFrame(showCoord);
+    });
+    app.renderer.domElement.addEventListener('pointerleave', () => { lastPt = null; if (!coordRaf) coordRaf = requestAnimationFrame(showCoord); });
+    app.renderer.domElement.addEventListener('wheel', () => { if (lastPt && !coordRaf) coordRaf = requestAnimationFrame(() => setTimeout(showCoord, 0)); }, { passive: true });
+
     // ── 입력 연결 ──
     const canvas = app.renderer.domElement;
     let down = null, lastHover = 0, zw = null;
