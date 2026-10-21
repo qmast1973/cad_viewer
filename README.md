@@ -37,6 +37,8 @@
 ---
 
 ### 큰 DWG 열기 (2026-10-21)
+**DWG는 서버가 필요합니다**: `start-viewer.bat` 을 실행해 로컬 서버(8795)를 켠 뒤 `http://127.0.0.1:8795/index.html` 로 여세요. GitHub Pages 같은 정적 주소에서는 변환 서버가 없어 DWG가 "서버 변환 응답 실패 (405)" 로 실패합니다(DXF·STL·OBJ는 가능). 같은 와이파이의 폰에서는 `http://<PC주소>:8795/` 로 엽니다.
+
 26MB·42MB급 실무 도면도 열립니다. 서버(`tools/server.js`)가 원본 LibreDWG(`bin/libredwg/dwg2dxf.exe`)로 변환한 뒤 `tools/dwg_lite.js` 가 선분·글자만 뽑아 가벼운 이진(`.cadlite`)으로 만들어 화면에 보냅니다. 처음 열기 27MB 약 38초, 같은 파일 다시 열기 약 1초(`%TEMP%\\cad-viewer-cache`). 사용 전 `bin/libredwg/` 에 LibreDWG 0.14 win64 릴리스를 풀어 두어야 합니다(저장소에는 포함하지 않음).
 - 직접 변환: `node tools/dwg_lite.js <입력.dwg> <출력.cadlite>` · 시험: `python tools/test_big_dwg.py <큰.dwg>`
 - 아직 그리지 않는 것: HATCH·MULTILEADER·LEADER·REGION·OLE (SPLINE 은 제어점 연결선으로 근사).
