@@ -1,0 +1,1584 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>경량 CAD 인앱 뷰어 (DWG / 2D DXF / 3D STL & OBJ)</title>
+  <style>
+    :root {
+      --bg-color: #1a1b20;
+      --canvas-bg: #141519;
+      --panel-bg: rgba(30, 32, 38, 0.94);
+      --panel-border: #333640;
+      --text-main: #f0f2f5;
+      --text-muted: #9aa0ac;
+      --accent-color: #0084ff;
+      --accent-hover: #0070db;
+      --btn-bg: #282a32;
+      --btn-hover: #363944;
+      --danger: #ff4757;
+      --success: #2ed573;
+    }
+
+    body.light-theme {
+      --bg-color: #e9ecef;
+      --canvas-bg: #f8f9fa;
+      --panel-bg: rgba(255, 255, 255, 0.95);
+      --panel-border: #d0d5dd;
+      --text-main: #1f2328;
+      --text-muted: #656d76;
+      --accent-color: #0969da;
+      --accent-hover: #0858b8;
+      --btn-bg: #eef1f4;
+      --btn-hover: #dfe3e8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    #app-container {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    /* 상단 헤더 툴바 */
+    header.cad-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 48px;
+      padding: 0 12px;
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--panel-border);
+      backdrop-filter: blur(10px);
+      z-index: 20;
+      flex-shrink: 0;
+    }
+
+    .header-left, .header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--text-main);
+    }
+
+    .brand svg {
+      width: 20px;
+      height: 20px;
+      fill: var(--accent-color);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      height: 32px;
+      padding: 0 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--btn-bg);
+      color: var(--text-main);
+      border: 1px solid var(--panel-border);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .btn:hover {
+      background: var(--btn-hover);
+    }
+
+    .btn.active {
+      background: var(--accent-color);
+      color: #fff;
+      border-color: var(--accent-color);
+    }
+
+    .btn-icon-only {
+      width: 32px;
+      padding: 0;
+    }
+
+    .btn svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    select.cad-select {
+      height: 32px;
+      padding: 0 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      background: var(--btn-bg);
+      color: var(--text-main);
+      border: 1px solid var(--panel-border);
+      outline: none;
+      cursor: pointer;
+    }
+
+    /* 메인 뷰포트 영역 */
+    #viewport-container {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      position: relative;
+      background: var(--canvas-bg);
+      overflow: hidden;
+      touch-action: none !important;
+    }
+
+    #lite-text-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    #cad-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none !important;
+    }
+
+    /* 플로팅 컨트롤러 */
+    .floating-views {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: var(--panel-bg);
+      padding: 6px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(8px);
+      z-index: 10;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+
+    .floating-zoom {
+      position: absolute;
+      bottom: 40px;
+      right: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: var(--panel-bg);
+      padding: 6px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(8px);
+      z-index: 10;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+
+    /* 하단 상태바 */
+    footer.cad-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 28px;
+      padding: 0 12px;
+      background: var(--panel-bg);
+      border-top: 1px solid var(--panel-border);
+      font-size: 11px;
+      color: var(--text-muted);
+      z-index: 20;
+      flex-shrink: 0;
+    }
+
+    .footer-info {
+      display: flex;
+      gap: 16px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 사이드 레이어 패널 */
+    #layer-panel {
+      position: absolute;
+      top: 48px;
+      left: 0;
+      width: 260px;
+      max-height: calc(100% - 76px);
+      background: var(--panel-bg);
+      border-right: 1px solid var(--panel-border);
+      border-bottom: 1px solid var(--panel-border);
+      backdrop-filter: blur(12px);
+      z-index: 15;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 4px 4px 16px rgba(0,0,0,0.3);
+      transition: transform 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+      transform: translateX(-100%);
+    }
+
+    #layer-panel.open {
+      transform: translateX(0);
+    }
+
+    .layer-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      font-size: 13px;
+      border-bottom: 1px solid var(--panel-border);
+      padding-bottom: 6px;
+    }
+
+    .layer-list {
+      overflow-y: auto;
+      max-height: 300px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .layer-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .layer-item:hover {
+      background: var(--btn-bg);
+    }
+
+    .layer-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .layer-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 드래그 앤 드롭 오버레이 */
+    #drop-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 132, 255, 0.15);
+      border: 3px dashed var(--accent-color);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent-color);
+      z-index: 50;
+      backdrop-filter: blur(4px);
+    }
+
+    #drop-overlay.active {
+      display: flex;
+    }
+
+    /* 로딩 인디케이터 */
+    #loading-indicator {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      z-index: 40;
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* 미디어 쿼리 - 모바일 화면 대응 */
+    @media (max-width: 640px) {
+      .brand span {
+        display: none;
+      }
+      .btn span {
+        display: none;
+      }
+      .btn {
+        padding: 0 6px;
+      }
+      header.cad-header {
+        padding: 0 6px;
+      }
+      .floating-views {
+        top: 8px;
+        right: 8px;
+        padding: 4px;
+        gap: 4px;
+      }
+      .floating-zoom {
+        bottom: 34px;
+        right: 8px;
+        padding: 4px;
+        gap: 4px;
+      }
+      #layer-panel {
+        width: 220px;
+      }
+    }
+  </style>
+  <script src="vendor/cad-vendor.bundle.js"></script>
+</head>
+<body>
+  <div id="app-container">
+    <!-- 헤더 툴바 -->
+    <header class="cad-header">
+      <div class="header-left">
+        <div class="brand">
+          <svg viewBox="0 0 24 24"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.2L19.5 8 12 11.8 4.5 8 12 4.2zM4 9.5l7 3.5v7l-7-3.5v-7zm9 10.5v-7l7-3.5v7l-7 3.5z"/></svg>
+          <span>CAD 뷰어</span>
+        </div>
+
+        <input type="file" id="fileInput" accept=".dwg,.dxf,.stl,.obj" style="display: none;">
+        <button class="btn" id="openBtn" title="CAD 파일 열기 (DWG, DXF, STL, OBJ)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+          <span>파일 열기</span>
+        </button>
+
+        <select id="sampleSelect" class="cad-select" title="샘플 도면/모델 불러오기">
+          <option value="" disabled selected>샘플 선택...</option>
+          <option value="sample.dwg">AutoCAD 실무 도면 (sample.dwg)</option>
+          <option value="bracket-2d.dxf">브래킷 도면 (2D DXF)</option>
+          <option value="gear-2d.dxf">스퍼 기어 (2D DXF)</option>
+          <option value="sample-3d.stl">L-브래킷 (3D STL)</option>
+        </select>
+
+        <button class="btn btn-icon-only" id="layerToggleBtn" title="도면 레이어 관리">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+        </button>
+      </div>
+
+      <div class="header-right">
+        <button class="btn" id="modeBtn" title="2D/3D 조작 모드 토글 (2D 모드는 드래그 시 패닝, 3D는 회전)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+          <span id="modeText">2D 패닝</span>
+        </button>
+
+        <button class="btn btn-icon-only" id="gridBtn" title="바닥 그리드 토글">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="9" y1="3" x2="9" y2="21"></line><line x1="15" y1="3" x2="15" y2="21"></line></svg>
+        </button>
+
+        <button class="btn btn-icon-only" id="wireframeBtn" title="3D 와이어프레임 토글">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="4" x2="20" y2="20"></line><line x1="20" y1="4" x2="4" y2="20"></line><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>
+        </button>
+
+        <button class="btn btn-icon-only" id="themeBtn" title="다크/라이트 테마 전환">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 레이어 패널 (사이드 드로어) -->
+    <div id="layer-panel">
+      <div class="layer-panel-header">
+        <span>도면 레이어 목록</span>
+        <button class="btn btn-icon-only" id="closeLayerBtn" style="border:none; height:24px; width:24px;">✕</button>
+      </div>
+      <div style="display: flex; gap: 6px; font-size: 11px;">
+        <button class="btn" id="showAllLayers" style="flex:1; height:24px;">전체 켜기</button>
+        <button class="btn" id="hideAllLayers" style="flex:1; height:24px;">전체 끄기</button>
+      </div>
+      <div class="layer-list" id="layerList">
+        <div style="font-size: 12px; color: var(--text-muted); padding: 8px;">도면을 로드하면 레이어가 표시됩니다.</div>
+      </div>
+    </div>
+
+    <!-- 뷰포트 영역 -->
+    <div id="viewport-container">
+      <div id="drop-overlay">CAD 파일(DWG, DXF, STL, OBJ)을 여기에 놓으세요</div>
+      <div id="loading-indicator">
+        <div class="spinner"></div>
+        <span id="loading-text">파일 파싱 및 렌더링 중...</span>
+      </div>
+
+      <!-- 플로팅 뷰 프리셋 -->
+      <div class="floating-views">
+        <button class="btn btn-icon-only" id="viewTop" title="평면도 (Top)">Top</button>
+        <button class="btn btn-icon-only" id="viewFront" title="정면도 (Front)">Frn</button>
+        <button class="btn btn-icon-only" id="viewRight" title="우측면도 (Right)">Rgt</button>
+        <button class="btn btn-icon-only" id="viewIso" title="등각도 (Isometric)">Iso</button>
+      </div>
+
+      <!-- 플로팅 줌 컨트롤 -->
+      <div class="floating-zoom">
+        <button class="btn btn-icon-only" id="zoomIn" title="확대 (+)">+</button>
+        <button class="btn btn-icon-only" id="zoomOut" title="축소 (-)">−</button>
+        <button class="btn btn-icon-only" id="zoomFit" title="화면 맞춤 (Home/Fit)">Fit</button>
+      </div>
+    </div>
+
+    <!-- 하단 상태바 -->
+    <footer class="cad-footer">
+      <div class="footer-info">
+        <span id="status-filename">파일: 없음</span>
+        <span id="status-size">크기: -</span>
+        <span id="status-stats">요소: -</span>
+      </div>
+      <div id="status-mode">모드: 2D 패닝</div>
+    </footer>
+  </div>
+
+  <script>
+    // AutoCAD 표준 ACI 색상 팔레트 테이블 (주요 1~7 및 기본 맵)
+    const ACI_COLORS = [
+      0x000000, 0xff0000, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0xff00ff, 0xffffff,
+      0x808080, 0xc0c0c0, 0xff0000, 0xff7f7f, 0xcc0000, 0xcc6666, 0x990000, 0x994c4c,
+      0x7f0000, 0x7f3f3f, 0x4c0000, 0x4c2626, 0xff3f00, 0xff9f7f, 0xcc3300, 0xcc7f66,
+      0x992600, 0x995f4c, 0x7f1f00, 0x7f4f3f, 0x4c1300, 0x4c2f26, 0xff7f00, 0xffbf7f,
+      0xcc6600, 0xcc9966, 0x994c00, 0x99734c, 0x7f3f00, 0x7f5f3f, 0x4c2600, 0x4c3926,
+      0xffbf00, 0xffdf7f, 0xcc9900, 0xccb266, 0x997300, 0x99864c, 0x7f5f00, 0x7f6f3f,
+      0x4c3900, 0x4c4226, 0xffff00, 0xffff7f, 0xcccc00, 0xcccc66, 0x999900, 0x99994c,
+      0x7f7f00, 0x7f7f3f, 0x4c4c00, 0x4c4c26, 0xbfff00, 0xdfff7f, 0x99cc00, 0xb2cc66,
+      0x739900, 0x86994c, 0x5f7f00, 0x6f7f3f, 0x394c00, 0x424c26, 0x7fff00, 0xbfff7f,
+      0x66cc00, 0x99cc66, 0x4c9900, 0x73994c, 0x3f7f00, 0x5f7f3f, 0x264c00, 0x394c26
+    ];
+
+    function getAciColor(colorNum, isDarkTheme) {
+      if (!colorNum || colorNum <= 0) return isDarkTheme ? 0xffffff : 0x111111;
+      if (colorNum === 7) return isDarkTheme ? 0xffffff : 0x111111;
+      if (colorNum < ACI_COLORS.length) return ACI_COLORS[colorNum];
+      return isDarkTheme ? 0x00ffff : 0x0088cc;
+    }
+
+    class CadViewerApp {
+      constructor() {
+        this.container = document.getElementById('viewport-container');
+        this.scene = new THREE.Scene();
+        this.camera = null;
+        this.renderer = null;
+        this.controls = null;
+        this.gridHelper = null;
+        this.axesHelper = null;
+        this.lights = [];
+
+        this.modelGroup = new THREE.Group();
+        this.scene.add(this.modelGroup);
+
+        this.layers = new Map(); // layerName -> { visible, color, group }
+        this.currentFormat = null;
+        this.currentFilename = null;
+        this.boundingBox = new THREE.Box3();
+        this.boundingSphere = new THREE.Sphere();
+
+        this.isDarkTheme = true;
+        this.is2DMode = true; // 기본 2D 모드 (한 손가락 Pan, 두 손가락 Zoom)
+        this.showGrid = true;
+        this.showWireframe = false;
+        this.materials3D = [];
+
+        // 터치 제스처 관리 변수
+        this.activePointers = new Map();
+        this.initialPinchDistance = 0;
+        this.lastTouchCenter = { x: 0, y: 0 };
+        this.lastTapTime = 0;
+
+        this.initThree();
+        this.initEvents();
+        this.initControlsCustom();
+      }
+
+      initThree() {
+        const width = this.container.clientWidth;
+        const height = this.container.clientHeight;
+
+        // Perspective 카메라 생성
+        this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 50000);
+        this.camera.position.set(0, 0, 300);
+
+        // 렌더러 생성
+        this.renderer = new THREE.WebGLRenderer({
+          antialias: true,
+          alpha: true,
+          powerPreference: "high-performance"
+        });
+        this.renderer.setSize(width, height);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        this.renderer.domElement.id = 'cad-canvas';
+        this.container.appendChild(this.renderer.domElement);
+        this.textOverlay = document.createElement('canvas');   // 큰 도면의 글자는 보이는 범위만 여기에 그린다
+        this.textOverlay.id = 'lite-text-overlay';
+        this.container.appendChild(this.textOverlay);
+        this.lite = null;
+
+        // OrbitControls 초기화
+        this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+        this.controls.enableDamping = true;
+        this.controls.dampingFactor = 0.08;
+        this.controls.screenSpacePanning = true;
+
+        // 조명 구성 (3D 모델용)
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.7);
+        dirLight1.position.set(1, 1, 1).normalize();
+        const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+        dirLight2.position.set(-1, -1, -1).normalize();
+        this.scene.add(ambientLight, dirLight1, dirLight2);
+        this.lights.push(ambientLight, dirLight1, dirLight2);
+
+        // 축 및 바닥 그리드
+        this.gridHelper = new THREE.GridHelper(500, 50, 0x444455, 0x2a2a35);
+        this.gridHelper.rotation.x = Math.PI / 2; // XY 평면에 그리드 배치 (CAD 표준)
+        this.scene.add(this.gridHelper);
+
+        this.axesHelper = new THREE.AxesHelper(50);
+        this.scene.add(this.axesHelper);
+
+        this.applyTheme(this.isDarkTheme);
+        this.updateModeControls();
+
+        // 애니메이션 루프
+        const animate = () => {
+          requestAnimationFrame(animate);
+          this.controls.update();
+          this.renderer.render(this.scene, this.camera);
+          this.drawLiteTexts();
+        };
+        animate();
+
+        // 윈도우 리사이즈
+        window.addEventListener('resize', () => this.onWindowResize());
+      }
+
+      onWindowResize() {
+        const width = this.container.clientWidth;
+        const height = this.container.clientHeight;
+        if (!width || !height) return;
+        this.camera.aspect = width / height;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(width, height);
+      }
+
+      applyTheme(isDark) {
+        this.isDarkTheme = isDark;
+        document.body.classList.toggle('light-theme', !isDark);
+
+        if (isDark) {
+          this.renderer.setClearColor(0x141519, 1);
+          if (this.gridHelper) {
+            this.gridHelper.material.color.setHex(0x444455);
+          }
+        } else {
+          this.renderer.setClearColor(0xf8f9fa, 1);
+          if (this.gridHelper) {
+            this.gridHelper.material.color.setHex(0xc0c5ce);
+          }
+        }
+        // 선분 색상 다시 갱신 (ACI 7 등 반전 대응)
+        this.refreshCadColors();
+      }
+
+      updateModeControls() {
+        const btn = document.getElementById('modeBtn');
+        const text = document.getElementById('modeText');
+        const statusMode = document.getElementById('status-mode');
+
+        if (this.is2DMode) {
+          btn.classList.remove('active');
+          text.textContent = '2D 패닝';
+          statusMode.textContent = '모드: 2D 패닝 (회전 잠금, 드래그 이동)';
+          // 2D 모드: 마우스 좌클릭도 이동(Pan), 마우스 회전 비활성화
+          this.controls.mouseButtons = {
+            LEFT: THREE.MOUSE.PAN,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT: THREE.MOUSE.ROTATE
+          };
+          this.controls.touches = {
+            ONE: THREE.TOUCH.PAN,
+            TWO: THREE.TOUCH.DOLLY_PAN
+          };
+          this.controls.enableRotate = false;
+        } else {
+          btn.classList.add('active');
+          text.textContent = '3D 궤도';
+          statusMode.textContent = '모드: 3D 회전 (자유 궤도)';
+          this.controls.mouseButtons = {
+            LEFT: THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT: THREE.MOUSE.PAN
+          };
+          this.controls.touches = {
+            ONE: THREE.TOUCH.ROTATE,
+            TWO: THREE.TOUCH.DOLLY_PAN
+          };
+          this.controls.enableRotate = true;
+        }
+      }
+
+      /* 모바일 터치 및 핀치 줌 정밀 컨트롤 */
+      initControlsCustom() {
+        const el = this.renderer.domElement;
+
+        // 더블 탭 시 맞춤 뷰
+        el.addEventListener('touchend', (e) => {
+          const now = Date.now();
+          if (e.touches.length === 0) {
+            if (now - this.lastTapTime < 300) {
+              this.fitToScreen();
+            }
+            this.lastTapTime = now;
+          }
+        });
+
+        // 휠 줌 스피드 미세 조정
+        el.addEventListener('wheel', (e) => {
+          e.preventDefault();
+        }, { passive: false });
+      }
+
+      initEvents() {
+        // 파일 선택
+        const fileInput = document.getElementById('fileInput');
+        document.getElementById('openBtn').addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => {
+          if (e.target.files.length > 0) {
+            this.loadFile(e.target.files[0]);
+            e.target.value = '';   // 같은 파일을 다시 골라도 열리도록 비움
+          }
+        });
+
+        // 샘플 드롭다운
+        const sampleSelect = document.getElementById('sampleSelect');
+        sampleSelect.addEventListener('change', (e) => {
+          if (e.target.value) {
+            this.loadSample(e.target.value);
+          }
+        });
+
+        // 레이어 토글 버튼
+        const layerPanel = document.getElementById('layer-panel');
+        document.getElementById('layerToggleBtn').addEventListener('click', () => {
+          layerPanel.classList.toggle('open');
+        });
+        document.getElementById('closeLayerBtn').addEventListener('click', () => {
+          layerPanel.classList.remove('open');
+        });
+        document.getElementById('showAllLayers').addEventListener('click', () => this.toggleAllLayers(true));
+        document.getElementById('hideAllLayers').addEventListener('click', () => this.toggleAllLayers(false));
+
+        // 모드 전환 (2D / 3D)
+        document.getElementById('modeBtn').addEventListener('click', () => {
+          this.is2DMode = !this.is2DMode;
+          this.updateModeControls();
+        });
+
+        // 그리드 토글
+        const gridBtn = document.getElementById('gridBtn');
+        gridBtn.addEventListener('click', () => {
+          this.showGrid = !this.showGrid;
+          this.gridHelper.visible = this.showGrid;
+          gridBtn.classList.toggle('active', this.showGrid);
+        });
+        gridBtn.classList.add('active');
+
+        // 와이어프레임 토글
+        const wireframeBtn = document.getElementById('wireframeBtn');
+        wireframeBtn.addEventListener('click', () => {
+          this.showWireframe = !this.showWireframe;
+          this.materials3D.forEach(m => m.wireframe = this.showWireframe);
+          wireframeBtn.classList.toggle('active', this.showWireframe);
+        });
+
+        // 테마 토글
+        document.getElementById('themeBtn').addEventListener('click', () => {
+          this.applyTheme(!this.isDarkTheme);
+        });
+
+        // 뷰 프리셋
+        document.getElementById('viewTop').addEventListener('click', () => this.setView('top'));
+        document.getElementById('viewFront').addEventListener('click', () => this.setView('front'));
+        document.getElementById('viewRight').addEventListener('click', () => this.setView('right'));
+        document.getElementById('viewIso').addEventListener('click', () => this.setView('iso'));
+
+        // 줌 컨트롤
+        document.getElementById('zoomIn').addEventListener('click', () => this.zoom(0.8));
+        document.getElementById('zoomOut').addEventListener('click', () => this.zoom(1.25));
+        document.getElementById('zoomFit').addEventListener('click', () => this.fitToScreen());
+
+        // 드래그 앤 드롭
+        const dropOverlay = document.getElementById('drop-overlay');
+        window.addEventListener('dragenter', (e) => {
+          e.preventDefault();
+          dropOverlay.classList.add('active');
+        });
+        dropOverlay.addEventListener('dragover', (e) => e.preventDefault());
+        dropOverlay.addEventListener('dragleave', (e) => {
+          e.preventDefault();
+          dropOverlay.classList.remove('active');
+        });
+        dropOverlay.addEventListener('drop', (e) => {
+          e.preventDefault();
+          dropOverlay.classList.remove('active');
+          if (e.dataTransfer.files.length > 0) {
+            this.loadFile(e.dataTransfer.files[0]);
+          }
+        });
+      }
+
+      showLoading(msg) {
+        const ind = document.getElementById('loading-indicator');
+        document.getElementById('loading-text').textContent = msg || '파일 로딩 중...';
+        ind.style.display = 'flex';
+      }
+
+      hideLoading() {
+        document.getElementById('loading-indicator').style.display = 'none';
+      }
+
+      clearModel() {
+        if (this.lite) {
+          this.lite.lines.forEach(l => l.obj.geometry.dispose());
+          this.lite = null;
+          this.drawLiteTexts(true);
+        }
+        while (this.modelGroup.children.length > 0) {
+          const obj = this.modelGroup.children[0];
+          this.modelGroup.remove(obj);
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+            else obj.material.dispose();
+          }
+        }
+        this.layers.clear();
+        this.materials3D = [];
+        document.getElementById('layerList').innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px;">레이어가 없습니다.</div>';
+      }
+
+      loadFile(file) {
+        this.currentFilename = file.name;
+        const ext = file.name.split('.').pop().toLowerCase();
+        this.showLoading(`${file.name} 분석 중...`);
+
+        if (ext === 'dwg') {
+          this.showLoading(`${file.name} (AutoCAD DWG 변환 및 파싱 중...)`);
+          // 큰 도면도 열리도록 서버가 원본 LibreDWG로 변환해 가벼운 이진(cadlite)으로 돌려준다 (27MB급 도면 약 30초, 같은 파일은 캐시로 즉시)
+          fetch('/api/dwg-lite', {
+            method: 'POST',
+            body: file
+          })
+          .then(async res => {
+            if (!res.ok) {
+              const errJson = await res.json().catch(() => ({}));
+              throw new Error(errJson.error || `서버 변환 응답 실패 (${res.status})`);
+            }
+            this.showLoading(`${file.name} (도면 내려받는 중...)`);
+            return res.arrayBuffer();
+          })
+          .then(buf => {
+            this.renderLite(buf, file.name);
+          })
+          .catch(err => {
+            this.hideLoading();
+            alert(`DWG 도면 변환 실패: ${err.message}\n로컬 서버(/api/convert-dwg)가 실행 중인지 확인해주세요.`);
+          });
+        } else if (ext === 'dxf') {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            this.renderDxf(e.target.result, file.name);
+          };
+          reader.readAsText(file);
+        } else if (ext === 'stl') {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            this.renderStl(e.target.result, file.name);
+          };
+          reader.readAsArrayBuffer(file);
+        } else if (ext === 'obj') {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            this.renderObj(e.target.result, file.name);
+          };
+          reader.readAsText(file);
+        } else {
+          alert('지원하지 않는 파일 형식입니다: .' + ext + ' (DWG, DXF, STL, OBJ 지원)');
+          this.hideLoading();
+        }
+      }
+
+      loadSample(name) {
+        this.currentFilename = name;
+        this.showLoading(`샘플 ${name} 불러오는 중...`);
+        const url = `sample/${name}`;
+        const ext = name.split('.').pop().toLowerCase();
+
+        if (ext === 'dwg') {
+          fetch(url)
+            .then(res => {
+              if (!res.ok) throw new Error('DWG 샘플 로드 실패');
+              return res.blob();
+            })
+            .then(blob => {
+              return fetch('/api/dwg-lite', { method: 'POST', body: blob });
+            })
+            .then(async res => {
+              if (!res.ok) throw new Error('DWG 변환 실패');
+              return res.arrayBuffer();
+            })
+            .then(buf => {
+              this.renderLite(buf, name);
+            })
+            .catch(err => {
+              // 정적 폴백 (sample_converted.dxf)
+              fetch('sample/sample_converted.dxf')
+                .then(r => r.text())
+                .then(t => {
+                  this.currentFormat = 'DWG';
+                  this.renderDxf(t, name);
+                })
+                .catch(e => {
+                  this.hideLoading();
+                  alert(`DWG 샘플 로드 에러: ${err.message}`);
+                });
+            });
+        } else if (ext === 'dxf' || ext === 'obj') {
+          fetch(url)
+            .then(res => {
+              if (!res.ok) throw new Error('샘플 로드 실패');
+              return res.text();
+            })
+            .then(text => {
+              if (ext === 'dxf') this.renderDxf(text, name);
+              else this.renderObj(text, name);
+            })
+            .catch(err => {
+              this.hideLoading();
+              alert(`샘플 로드 에러: ${err.message}`);
+            });
+        } else if (ext === 'stl') {
+          fetch(url)
+            .then(res => {
+              if (!res.ok) throw new Error('샘플 로드 실패');
+              return res.arrayBuffer();
+            })
+            .then(buf => this.renderStl(buf, name))
+            .catch(err => {
+              this.hideLoading();
+              alert(`샘플 로드 에러: ${err.message}`);
+            });
+        }
+      }
+
+      /* 큰 도면(cadlite) 렌더링: 같은 색·레이어의 선분을 한 덩어리로 그려 수백만 개도 부드럽게 */
+      renderLite(buf, filename) {
+        try {
+          this.currentFilename = filename || this.currentFilename;
+          this.clearModel();
+          this.currentFormat = 'DWG';
+          const jsonLen = new DataView(buf).getUint32(0, true);
+          const head = JSON.parse(new TextDecoder('utf-8').decode(new Uint8Array(buf, 4, jsonLen)));
+          const base = 4 + jsonLen;
+
+          head.layers.forEach(l => {
+            const group = new THREE.Group();
+            group.name = `layer_${l.name}`;
+            group.visible = !l.off;
+            this.modelGroup.add(group);
+            this.layers.set(l.name, {
+              name: l.name, visible: !l.off, color: getAciColor(l.aci, this.isDarkTheme),
+              colorNumber: l.aci, group, empty: !!l.empty
+            });
+          });
+
+          const bmin = head.fit.min, bmax = head.fit.max;
+          const center = new THREE.Vector3((bmin[0] + bmax[0]) / 2, (bmin[1] + bmax[1]) / 2, 0);
+          const radius = Math.max(Math.hypot(head.bounds.max[0] - head.bounds.min[0], head.bounds.max[1] - head.bounds.min[1]), 1);
+          const lines = [];
+          head.groups.forEach(g => {
+            const info = this.layers.get(g.layer);
+            if (!info) return;
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(buf, base + g.offset * 4, g.count), 2));
+            geom.boundingSphere = new THREE.Sphere(center.clone(), radius);   // 2값짜리 좌표라 자동 계산을 쓰지 않음
+            const mat = new THREE.LineBasicMaterial({ color: getAciColor(g.aci, this.isDarkTheme) });
+            const obj = new THREE.LineSegments(geom, mat);
+            obj.frustumCulled = false;
+            info.group.add(obj);
+            lines.push({ obj, aci: g.aci });
+          });
+
+          this.lite = { head, lines, texts: head.texts, fit: head.fit };
+          this.fitBox = new THREE.Box3(new THREE.Vector3(bmin[0], bmin[1], 0), new THREE.Vector3(bmax[0], bmax[1], 0));
+          this.textsDirty = true;
+
+          this.updateLayerPanel();
+          this.is2DMode = true;
+          this.updateModeControls();
+          this.setView('top');
+          this.fitToScreen();
+
+          const size = this.fitBox.getSize(new THREE.Vector3());
+          const st = head.stats;
+          this.updateStatus(filename, size, `${st.segments.toLocaleString()}개 선분, ${st.texts.toLocaleString()}개 글자, ${this.layers.size}개 레이어`);
+        } catch (err) {
+          console.error(err);
+          alert(`도면 표시 실패: ${err.message}`);
+        } finally {
+          this.hideLoading();
+        }
+      }
+
+      /* 큰 도면의 글자: 화면에 보이고 읽을 만한 크기인 것만 겹쳐 그림 */
+      drawLiteTexts(force) {
+        const cv = this.textOverlay;
+        if (!cv) return;
+        const w = this.container.clientWidth, h = this.container.clientHeight;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        if (!this.lite) {
+          if (force || this._textsShown) { cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); this._textsShown = false; }
+          return;
+        }
+        const m = this.camera.matrixWorld.elements, pj = this.camera.projectionMatrix.elements;
+        const sig = m.join(',') + '|' + pj[0] + ',' + pj[5] + '|' + w + 'x' + h;
+        if (!this.textsDirty && sig === this._textSig) return;
+        this._textSig = sig; this.textsDirty = false;
+        if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+        const ctx = cv.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        this._textsShown = true;
+
+        // 위에서 본 평면 기준: 월드 길이 1이 화면 몇 픽셀인지
+        const dist = this.camera.position.distanceTo(this.controls.target);
+        const pxPerUnit = h / (2 * dist * Math.tan(this.camera.fov * Math.PI / 360));
+        const v = new THREE.Vector3();
+        let drawn = 0;
+        ctx.textBaseline = 'alphabetic';
+        for (const t of this.lite.texts) {
+          const fs = t.h * pxPerUnit;
+          if (fs < 4 || fs > 600) continue;
+          const info = this.layers.get(t.layer);
+          if (info && !info.visible) continue;
+          v.set(t.x, t.y, 0).project(this.camera);
+          const sx = (v.x + 1) / 2 * w, sy = (1 - v.y) / 2 * h;
+          if (sx < -200 || sx > w + 200 || sy < -200 || sy > h + 200) continue;
+          if (t._l === undefined) t._l = this.cleanCadLines(t.s);
+          if (t._l.length === 0) continue;
+          ctx.font = `${fs.toFixed(1)}px "Malgun Gothic", "맑은 고딕", -apple-system, sans-serif`;
+          ctx.fillStyle = '#' + getAciColor(t.aci, this.isDarkTheme).toString(16).padStart(6, '0');
+          // 여러 줄(MTEXT)은 줄마다 아래로 내려 그림. MTEXT 삽입점은 첫 줄의 위쪽, TEXT 는 글줄 바닥
+          ctx.save(); ctx.translate(sx, sy); if (t.rot) ctx.rotate(-t.rot * Math.PI / 180);
+          t._l.forEach((ln, i) => ctx.fillText(ln, 0, (t.mt ? fs : 0) + i * fs * 1.5));
+          ctx.restore();
+          if (++drawn >= 6000) break;
+        }
+      }
+
+      /* 2D DXF 렌더링 파이프라인 */
+      renderDxf(dxfText, filename) {
+        try {
+          this.currentFilename = filename || this.currentFilename;
+          this.clearModel();
+          this.currentFormat = 'DXF';
+          const parser = new DxfParser();
+          const dxf = parser.parseSync(dxfText);
+
+          if (!dxf || !dxf.entities) {
+            throw new Error('DXF 파싱 결과 엔터티가 비어 있습니다.');
+          }
+
+          // 레이어 그룹 셋업
+          const layerDef = (dxf.tables && dxf.tables.layer && dxf.tables.layer.layers) ? dxf.tables.layer.layers : {};
+          const knownLayers = new Set(Object.keys(layerDef));
+          
+          dxf.entities.forEach(ent => {
+            if (ent.layer) knownLayers.add(ent.layer);
+          });
+
+          knownLayers.forEach(name => {
+            const def = layerDef[name] || {};
+            const group = new THREE.Group();
+            group.name = `layer_${name}`;
+            this.modelGroup.add(group);
+            const colorHex = getAciColor(def.colorNumber || def.color, this.isDarkTheme);
+            this.layers.set(name, {
+              name,
+              visible: true,
+              color: colorHex,
+              colorNumber: def.colorNumber || def.color,
+              group
+            });
+          });
+
+          // 엔터티 렌더링
+          let totalEntities = 0;
+          const blocks = dxf.blocks || {};
+
+          const addEntityToGroup = (ent, targetGroup, parentMatrix) => {
+            const lName = ent.layer || '0';
+            const layerInfo = this.layers.get(lName) || { color: this.isDarkTheme ? 0xffffff : 0x111111 };
+            // 색상 결정: 0(BYBLOCK) 또는 256(BYLAYER)일 때는 레이어 색상 상속
+            let entColor = layerInfo.color;
+            if (ent.colorNumber && ent.colorNumber > 0 && ent.colorNumber !== 256) {
+              entColor = getAciColor(ent.colorNumber, this.isDarkTheme);
+            }
+
+            let obj = null;
+
+            if (ent.type === 'LINE') {
+              const p1 = ent.vertices[0];
+              const p2 = ent.vertices[1];
+              const geom = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(p1.x, p1.y, 0),
+                new THREE.Vector3(p2.x, p2.y, 0)
+              ]);
+              const mat = new THREE.LineBasicMaterial({ color: entColor });
+              obj = new THREE.Line(geom, mat);
+            } else if (ent.type === 'LWPOLYLINE' || ent.type === 'POLYLINE') {
+              const points = [];
+              const verts = ent.vertices;
+              for (let i = 0; i < verts.length; i++) {
+                const v1 = verts[i];
+                const v2 = verts[(i + 1) % verts.length];
+                points.push(new THREE.Vector3(v1.x, v1.y, 0));
+
+                // Bulge 원호 보간 지원
+                if (v1.bulge && (i < verts.length - 1 || ent.shape)) {
+                  const arcPts = this.interpolateBulge(v1, v2, v1.bulge);
+                  points.push(...arcPts);
+                }
+              }
+              if (ent.shape && points.length > 0) {
+                points.push(points[0].clone());
+              }
+              const geom = new THREE.BufferGeometry().setFromPoints(points);
+              const mat = new THREE.LineBasicMaterial({ color: entColor });
+              obj = new THREE.Line(geom, mat);
+            } else if (ent.type === 'CIRCLE') {
+              const curve = new THREE.EllipseCurve(
+                ent.center.x, ent.center.y,
+                ent.radius, ent.radius,
+                0, 2 * Math.PI,
+                false, 0
+              );
+              const pts = curve.getPoints(64).map(p => new THREE.Vector3(p.x, p.y, 0));
+              const geom = new THREE.BufferGeometry().setFromPoints(pts);
+              const mat = new THREE.LineBasicMaterial({ color: entColor });
+              obj = new THREE.LineLoop(geom, mat);
+            } else if (ent.type === 'ARC') {
+              let sa = ent.startAngle;
+              let ea = ent.endAngle;
+              if (sa > 2 * Math.PI || ea > 2 * Math.PI) {
+                sa = THREE.MathUtils.degToRad(sa);
+                ea = THREE.MathUtils.degToRad(ea);
+              }
+              const curve = new THREE.EllipseCurve(
+                ent.center.x, ent.center.y,
+                ent.radius, ent.radius,
+                sa, ea,
+                false, 0
+              );
+              const pts = curve.getPoints(48).map(p => new THREE.Vector3(p.x, p.y, 0));
+              const geom = new THREE.BufferGeometry().setFromPoints(pts);
+              const mat = new THREE.LineBasicMaterial({ color: entColor });
+              obj = new THREE.Line(geom, mat);
+            } else if (ent.type === 'TEXT' || ent.type === 'MTEXT') {
+              const pos = ent.position || ent.startPoint;
+              const h = ent.height || ent.textHeight || 2.5;
+              obj = this.createTextSprite(ent.text, entColor, h);
+              if (obj && pos) {
+                obj.position.set(pos.x, pos.y, 0.05); // 선보다 살짝 앞에 배치
+              }
+            } else if (ent.type === 'INSERT') {
+              const blk = blocks[ent.name];
+              if (blk && blk.entities) {
+                const subGrp = new THREE.Group();
+                blk.entities.forEach(bEnt => addEntityToGroup(bEnt, subGrp));
+
+                // dxf-parser의 스케일 속성 (xScale / yScale / zScale) 처리
+                const sx = ent.xScale !== undefined ? ent.xScale : (ent.scale ? ent.scale.x : 1);
+                const sy = ent.yScale !== undefined ? ent.yScale : (ent.scale ? ent.scale.y : 1);
+                const sz = ent.zScale !== undefined ? ent.zScale : (ent.scale ? ent.scale.z : 1);
+                subGrp.scale.set(sx, sy, sz);
+
+                const px = ent.position ? ent.position.x : 0;
+                const py = ent.position ? ent.position.y : 0;
+                subGrp.position.set(px, py, 0);
+
+                if (ent.rotation) {
+                  subGrp.rotation.z = THREE.MathUtils.degToRad(ent.rotation);
+                }
+                targetGroup.add(subGrp);
+              }
+            }
+
+            if (obj) {
+              targetGroup.add(obj);
+              totalEntities++;
+            }
+          };
+
+          dxf.entities.forEach(ent => {
+            const lInfo = this.layers.get(ent.layer || '0');
+            const target = lInfo ? lInfo.group : this.modelGroup;
+            addEntityToGroup(ent, target);
+          });
+
+          this.updateLayerPanel();
+          this.is2DMode = true; // DXF 도면은 2D 모드로 기본 진입
+          this.updateModeControls();
+          this.setView('top');
+          this.fitToScreen();
+
+          const size = this.boundingBox.getSize(new THREE.Vector3());
+          this.updateStatus(filename, size, `${totalEntities}개 요소, ${this.layers.size}개 레이어`);
+        } catch (err) {
+          console.error(err);
+          alert(`DXF 렌더링 실패: ${err.message}`);
+        } finally {
+          this.hideLoading();
+        }
+      }
+
+      /* Bulge 호 보간 알고리즘 */
+      interpolateBulge(p1, p2, bulge) {
+        const points = [];
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const chord = Math.hypot(dx, dy);
+        if (chord < 1e-5) return points;
+
+        const theta = 4 * Math.atan(bulge);
+        const radius = chord / (2 * Math.sin(theta / 2));
+        const alpha = Math.atan2(dy, dx);
+        const gamma = (Math.PI - theta) / 2;
+        const beta = alpha + (bulge > 0 ? (Math.PI / 2 - gamma) : -(Math.PI / 2 - gamma));
+
+        const cx = p1.x + Math.abs(radius) * Math.cos(beta);
+        const cy = p1.y + Math.abs(radius) * Math.sin(beta);
+
+        const startAngle = Math.atan2(p1.y - cy, p1.x - cx);
+        const endAngle = Math.atan2(p2.y - cy, p2.x - cx);
+        let span = endAngle - startAngle;
+
+        if (bulge > 0 && span < 0) span += 2 * Math.PI;
+        else if (bulge < 0 && span > 0) span -= 2 * Math.PI;
+
+        const segments = 16;
+        for (let i = 1; i < segments; i++) {
+          const t = startAngle + (span * (i / segments));
+          points.push(new THREE.Vector3(cx + Math.abs(radius) * Math.cos(t), cy + Math.abs(radius) * Math.sin(t), 0));
+        }
+        return points;
+      }
+
+      /* AutoCAD CAD 텍스트 정제기 (서식 제어 태그, 폰트 코드 말끔히 제거) */
+      cleanCadText(raw) {
+        if (!raw) return '';
+        let str = String(raw);
+        // {\f궁서체|b0...;텍스트} 구조 정제
+        str = str.replace(/\{[^{}]*;([^{}]*)\}/g, '$1');
+        str = str.replace(/\{[^{}]*\}/g, '');
+        str = str.replace(/\\P/gi, ' ');
+        str = str.replace(/\\[A-Za-z0-9~^_]+;?/g, '');
+        str = str.replace(/[\\{}]/g, '');
+        return str.trim();
+      }
+
+      /* 큰 도면용: 줄바꿈(\P)을 살리고, 서식 태그를 지우고, \U+C218 같은 유니코드·%%d 같은 기호를 글자로 바꿈 */
+      cleanCadLines(raw) {
+        if (!raw) return [];
+        let str = String(raw);
+        str = str.replace(/\\U\+([0-9A-Fa-f]{4})/g, (m, h) => String.fromCharCode(parseInt(h, 16)));
+        str = str.replace(/%%[dD]/g, '°').replace(/%%[pP]/g, '±').replace(/%%[cC]/g, 'Ø');
+        str = str.replace(/\\P/gi, '\n').replace(/\t/g, ' ');
+        str = str.replace(/\{[^{}]*;([^{}]*)\}/g, '$1').replace(/\{[^{}]*\}/g, '');
+        str = str.replace(/\\[A-Za-z0-9~^_]+;?/g, '');
+        str = str.replace(/[\\{}]/g, '');
+        return str.split('\n').map(x => x.trim()).filter(x => x.length > 0);
+      }
+
+      /* 2D 텍스트 스프라이트 생성 (정밀 비율 및 폰트 렌더링) */
+      createTextSprite(text, colorHex, height) {
+        const cleaned = this.cleanCadText(text);
+        if (!cleaned || cleaned.length === 0) return null;
+
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const fontSize = 48;
+        ctx.font = `${fontSize}px "Malgun Gothic", "맑은 고딕", -apple-system, sans-serif`;
+
+        const textMetrics = ctx.measureText(cleaned);
+        const textWidth = Math.max(textMetrics.width, 10);
+        canvas.width = Math.ceil(textWidth + 24);
+        canvas.height = Math.ceil(fontSize * 1.3);
+
+        ctx.font = `${fontSize}px "Malgun Gothic", "맑은 고딕", -apple-system, sans-serif`;
+        ctx.fillStyle = `#${colorHex.toString(16).padStart(6, '0')}`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(cleaned, 12, canvas.height / 2);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.minFilter = THREE.LinearFilter;
+        const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+        const sprite = new THREE.Sprite(mat);
+
+        const h = Math.max(height || 2.5, 0.5);
+        const aspect = canvas.width / canvas.height;
+        sprite.scale.set(h * aspect, h, 1);
+        sprite.center.set(0, 0.5);
+        return sprite;
+      }
+
+      /* 3D STL 렌더링 파이프라인 */
+      renderStl(arrayBuffer, filename) {
+        try {
+          this.clearModel();
+          this.currentFormat = 'STL';
+          const loader = new STLLoader();
+          const geometry = loader.parse(arrayBuffer);
+          geometry.computeVertexNormals();
+
+          const material = new THREE.MeshStandardMaterial({
+            color: 0x90caf9,
+            metalness: 0.25,
+            roughness: 0.45,
+            wireframe: this.showWireframe
+          });
+          this.materials3D.push(material);
+
+          const mesh = new THREE.Mesh(geometry, material);
+          this.modelGroup.add(mesh);
+
+          this.is2DMode = false; // 3D 모델은 3D 궤도 모드로 진입
+          this.updateModeControls();
+          this.setView('iso');
+          this.fitToScreen();
+
+          const triangles = geometry.attributes.position.count / 3;
+          const size = this.boundingBox.getSize(new THREE.Vector3());
+          this.updateStatus(filename, size, `${triangles.toLocaleString()}개 삼각형`);
+        } catch (err) {
+          console.error(err);
+          alert(`STL 렌더링 실패: ${err.message}`);
+        } finally {
+          this.hideLoading();
+        }
+      }
+
+      /* 3D OBJ 렌더링 파이프라인 */
+      renderObj(objText, filename) {
+        try {
+          this.clearModel();
+          this.currentFormat = 'OBJ';
+          const loader = new OBJLoader();
+          const group = loader.parse(objText);
+
+          let triangles = 0;
+          group.traverse(child => {
+            if (child.isMesh) {
+              const mat = new THREE.MeshStandardMaterial({
+                color: 0xa5d6a7,
+                metalness: 0.2,
+                roughness: 0.5,
+                wireframe: this.showWireframe
+              });
+              child.material = mat;
+              this.materials3D.push(mat);
+              if (child.geometry) {
+                child.geometry.computeVertexNormals();
+                if (child.geometry.attributes.position) {
+                  triangles += child.geometry.attributes.position.count / 3;
+                }
+              }
+            }
+          });
+
+          this.modelGroup.add(group);
+          this.is2DMode = false;
+          this.updateModeControls();
+          this.setView('iso');
+          this.fitToScreen();
+
+          const size = this.boundingBox.getSize(new THREE.Vector3());
+          this.updateStatus(filename, size, `${triangles.toLocaleString()}개 삼각형`);
+        } catch (err) {
+          console.error(err);
+          alert(`OBJ 렌더링 실패: ${err.message}`);
+        } finally {
+          this.hideLoading();
+        }
+      }
+
+      /* 레이어 UI 갱신 */
+      updateLayerPanel() {
+        const list = document.getElementById('layerList');
+        list.innerHTML = '';
+        if (this.layers.size === 0) {
+          list.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px;">레이어가 없습니다.</div>';
+          return;
+        }
+
+        this.layers.forEach(layer => {
+          const item = document.createElement('div');
+          item.className = 'layer-item';
+
+          const chk = document.createElement('input');
+          chk.type = 'checkbox';
+          chk.checked = layer.visible;
+          chk.addEventListener('change', (e) => {
+            this.toggleLayer(layer.name, e.target.checked);
+          });
+
+          const dot = document.createElement('div');
+          dot.className = 'layer-dot';
+          dot.style.background = `#${layer.color.toString(16).padStart(6, '0')}`;
+
+          const name = document.createElement('span');
+          name.className = 'layer-name';
+          name.textContent = layer.name;
+
+          item.appendChild(chk);
+          item.appendChild(dot);
+          item.appendChild(name);
+          list.appendChild(item);
+        });
+      }
+
+      toggleLayer(name, visible) {
+        const layer = this.layers.get(name);
+        if (layer) {
+          layer.visible = visible;
+          layer.group.visible = visible;
+          this.textsDirty = true;
+        }
+      }
+
+      toggleAllLayers(visible) {
+        this.layers.forEach(layer => {
+          layer.visible = visible;
+          layer.group.visible = visible;
+        });
+        this.textsDirty = true;
+        const chks = document.querySelectorAll('#layerList input[type="checkbox"]');
+        chks.forEach(chk => chk.checked = visible);
+      }
+
+      refreshCadColors() {
+        if (this.lite) {                                   // 큰 도면: 덩어리마다 색을 다시 입힘
+          this.lite.lines.forEach(l => l.obj.material.color.setHex(getAciColor(l.aci, this.isDarkTheme)));
+          this.layers.forEach(l => { l.color = getAciColor(l.colorNumber, this.isDarkTheme); });
+          this.textsDirty = true;
+          this.updateLayerPanel();
+          return;
+        }
+        if (this.currentFormat !== 'DXF') return;
+        this.layers.forEach(l => {
+          const newColor = getAciColor(l.colorNumber, this.isDarkTheme);
+          l.color = newColor;
+          l.group.traverse(child => {
+            if (child.material && child.material.color) {
+              child.material.color.setHex(newColor);
+            }
+          });
+        });
+        this.updateLayerPanel();
+      }
+
+      /* 화면 맞춤 (Fit to screen) */
+      fitToScreen() {
+        this.boundingBox.makeEmpty();
+        if (this.lite) this.boundingBox.copy(this.fitBox);   // 큰 도면은 미리 계산해 둔 범위를 씀
+        else this.modelGroup.traverse(child => {
+          if (child.isLine || child.isMesh || child.isSprite) {
+            const childBox = new THREE.Box3().setFromObject(child);
+            const sz = childBox.getSize(new THREE.Vector3());
+            // 이상치 좌표(1e6 이상 무한대값) 필터링
+            if (isFinite(sz.x) && sz.x < 1e6 && sz.y < 1e6 && sz.z < 1e6 &&
+                Math.abs(childBox.min.x) < 1e6 && Math.abs(childBox.max.x) < 1e6) {
+              this.boundingBox.union(childBox);
+            }
+          }
+        });
+
+        if (this.boundingBox.isEmpty()) {
+          this.boundingBox.setFromObject(this.modelGroup);
+        }
+        if (this.boundingBox.isEmpty()) return;
+
+        const center = this.boundingBox.getCenter(new THREE.Vector3());
+        const size = this.boundingBox.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z, 10);
+
+        this.controls.target.copy(center);
+
+        // 현재 카메라 뷰 방향 유지하면서 거리만 계산
+        const fov = this.camera.fov * (Math.PI / 180);
+        let dist = maxDim / (2 * Math.tan(fov / 2));
+        dist *= 1.4; // 여백 40%
+
+        const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+        if (dir.lengthSq() < 0.001) {
+          dir.set(0, 0, 1);
+        }
+        this.camera.position.copy(center).add(dir.multiplyScalar(dist));
+        this.camera.near = dist / 100;
+        this.camera.far = dist * 100;
+        this.camera.updateProjectionMatrix();
+        this.controls.update();
+
+        // 바닥 그리드 위치/크기 자동 적응
+        if (this.gridHelper) {
+          this.gridHelper.position.set(center.x, center.y, this.boundingBox.min.z);
+        }
+      }
+
+      /* 뷰 프리셋 전환 */
+      setView(viewName) {
+        if (this.lite) this.boundingBox.copy(this.fitBox); else this.boundingBox.setFromObject(this.modelGroup);
+        const center = this.boundingBox.isEmpty() ? new THREE.Vector3() : this.boundingBox.getCenter(new THREE.Vector3());
+        const size = this.boundingBox.isEmpty() ? new THREE.Vector3(100, 100, 100) : this.boundingBox.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z, 10);
+        const dist = maxDim * 1.8;
+
+        this.controls.target.copy(center);
+
+        if (viewName === 'top') {
+          this.camera.position.set(center.x, center.y, center.z + dist);
+          this.camera.up.set(0, 1, 0);
+        } else if (viewName === 'front') {
+          this.camera.position.set(center.x, center.y - dist, center.z);
+          this.camera.up.set(0, 0, 1);
+        } else if (viewName === 'right') {
+          this.camera.position.set(center.x + dist, center.y, center.z);
+          this.camera.up.set(0, 0, 1);
+        } else if (viewName === 'iso') {
+          this.camera.position.set(center.x + dist * 0.7, center.y - dist * 0.7, center.z + dist * 0.7);
+          this.camera.up.set(0, 0, 1);
+        }
+        this.camera.updateProjectionMatrix();
+        this.controls.update();
+      }
+
+      zoom(factor) {
+        const offset = this.camera.position.clone().sub(this.controls.target);
+        offset.multiplyScalar(factor);
+        this.camera.position.copy(this.controls.target).add(offset);
+        this.controls.update();
+      }
+
+      updateStatus(filename, size, stats) {
+        document.getElementById('status-filename').textContent = `파일: ${filename}`;
+        document.getElementById('status-size').textContent = `치수: ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`;
+        document.getElementById('status-stats').textContent = `통계: ${stats}`;
+      }
+
+      /* 에이전트 브리지 전용 상태 반환 객체 */
+      getState() {
+        const size = this.boundingBox.getSize(new THREE.Vector3());
+        const center = this.boundingBox.getCenter(new THREE.Vector3());
+        const layerList = [];
+        this.layers.forEach(l => layerList.push({ name: l.name, visible: l.visible }));
+
+        return {
+          filename: this.currentFilename,
+          format: this.currentFormat,
+          is2DMode: this.is2DMode,
+          isDarkTheme: this.isDarkTheme,
+          showGrid: this.showGrid,
+          showWireframe: this.showWireframe,
+          layers: layerList,
+          bounds: {
+            size: [size.x, size.y, size.z],
+            center: [center.x, center.y, center.z]
+          },
+          camera: {
+            position: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+            target: [this.controls.target.x, this.controls.target.y, this.controls.target.z]
+          }
+        };
+      }
+    }
+
+    // 전역 초기화 및 에이전트 브리지 노출
+    window.addEventListener('DOMContentLoaded', () => {
+      const app = new CadViewerApp();
+      window.cadViewer = {
+        app,
+        open: (file) => app.loadFile(file),
+        loadSample: (name) => app.loadSample(name),
+        setView: (view) => app.setView(view),
+        fit: () => app.fitToScreen(),
+        setTheme: (theme) => app.applyTheme(theme === 'dark'),
+        setMode: (mode) => {
+          app.is2DMode = (mode === '2d');
+          app.updateModeControls();
+        },
+        toggleLayer: (name, visible) => app.toggleLayer(name, visible),
+        toggleGrid: (show) => {
+          app.showGrid = show !== undefined ? show : !app.showGrid;
+          app.gridHelper.visible = app.showGrid;
+        },
+        toggleWireframe: (show) => {
+          app.showWireframe = show !== undefined ? show : !app.showWireframe;
+          app.materials3D.forEach(m => m.wireframe = app.showWireframe);
+        },
+        zoom: (factor) => app.zoom(factor),
+        getState: () => app.getState()
+      };
+
+      // 시작 시 기본 샘플(브래킷 2D 도면) 자동 로드
+      app.loadSample('bracket-2d.dxf');
+    });
+  </script>
+</body>
+</html>

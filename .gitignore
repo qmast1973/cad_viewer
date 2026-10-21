@@ -1,0 +1,11 @@
+# 받아서 쓰는 외부 프로그램(GPL, README 참고) · 설치물 · 시험 산출물
+bin/
+tools/node_modules/
+tools/shots/
+tools/*.png
+__pycache__/
+# 사용자 도면(제3자 저작물일 수 있음)은 올리지 않는다
+sample/*.dwg
+sample/sample_converted.dxf
+sample/test_out.dxf
+*.cadlite
