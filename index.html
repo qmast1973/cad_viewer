@@ -828,14 +828,20 @@
           })
           .catch(err => {
             this.hideLoading();
-            alert(`DWG 도면 변환 실패: ${err.message}\n로컬 서버(/api/convert-dwg)가 실행 중인지 확인해주세요.`);
+            alert(`DWG 도면 변환 실패: ${err.message}\nstart-viewer.bat 으로 로컬 서버를 켠 뒤 http://127.0.0.1:8795/ 에서 열어 주세요.`);
           });
         } else if (ext === 'dxf') {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            this.renderDxf(e.target.result, file.name);
-          };
-          reader.readAsText(file);
+          // 서버가 있으면 같은 가벼운 방식(찾기·측정 도구 사용 가능), 없으면(정적 주소) 예전 방식으로 연다
+          fetch('/api/dwg-lite?type=dxf', { method: 'POST', body: file })
+            .then(res => { if (!res.ok) throw new Error('no-server'); return res.arrayBuffer(); })
+            .then(buf => this.renderLite(buf, file.name))
+            .catch(() => {
+              const reader = new FileReader();
+              reader.onload = (e) => {
+                this.renderDxf(e.target.result, file.name);
+              };
+              reader.readAsText(file);
+            });
         } else if (ext === 'stl') {
           const reader = new FileReader();
           reader.onload = (e) => {
@@ -895,9 +901,14 @@
               if (!res.ok) throw new Error('샘플 로드 실패');
               return res.text();
             })
-            .then(text => {
-              if (ext === 'dxf') this.renderDxf(text, name);
-              else this.renderObj(text, name);
+            .then(async text => {
+              if (ext === 'dxf') {
+                try {                                          // 서버가 있으면 가벼운 방식으로 (찾기·측정 도구 사용 가능)
+                  const r = await fetch('/api/dwg-lite?type=dxf', { method: 'POST', body: text });
+                  if (!r.ok) throw new Error('no-server');
+                  this.renderLite(await r.arrayBuffer(), name);
+                } catch (e) { this.renderDxf(text, name); }
+              } else this.renderObj(text, name);
             })
             .catch(err => {
               this.hideLoading();
@@ -922,7 +933,7 @@
         try {
           this.currentFilename = filename || this.currentFilename;
           this.clearModel();
-          this.currentFormat = 'DWG';
+          this.currentFormat = /\.dxf$/i.test(filename || '') ? 'DXF' : 'DWG';
           const jsonLen = new DataView(buf).getUint32(0, true);
           const head = JSON.parse(new TextDecoder('utf-8').decode(new Uint8Array(buf, 4, jsonLen)));
           const base = 4 + jsonLen;
@@ -995,6 +1006,7 @@
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, w, h);
         this._textsShown = true;
+        if (this.textsOn === false) return;                    // 글꼴 설정(cad-tools.js): 글자 숨김
 
         // 위에서 본 평면 기준: 월드 길이 1이 화면 몇 픽셀인지
         const dist = this.camera.position.distanceTo(this.controls.target);
@@ -1003,16 +1015,17 @@
         let drawn = 0;
         ctx.textBaseline = 'alphabetic';
         for (const t of this.lite.texts) {
-          const fs = t.h * pxPerUnit;
+          const fs = t.h * pxPerUnit * (this.textScale || 1);
           if (fs < 4 || fs > 600) continue;
           const info = this.layers.get(t.layer);
           if (info && !info.visible) continue;
+          ctx.globalAlpha = info && info.opacity !== undefined ? info.opacity : 1;   // 도면층 투명도
           v.set(t.x, t.y, 0).project(this.camera);
           const sx = (v.x + 1) / 2 * w, sy = (1 - v.y) / 2 * h;
           if (sx < -200 || sx > w + 200 || sy < -200 || sy > h + 200) continue;
           if (t._l === undefined) t._l = this.cleanCadLines(t.s);
           if (t._l.length === 0) continue;
-          ctx.font = `${fs.toFixed(1)}px "Malgun Gothic", "맑은 고딕", -apple-system, sans-serif`;
+          ctx.font = `${fs.toFixed(1)}px ${this.textFont || '"Malgun Gothic", "맑은 고딕"'}, -apple-system, sans-serif`;
           ctx.fillStyle = '#' + getAciColor(t.aci, this.isDarkTheme).toString(16).padStart(6, '0');
           // 여러 줄(MTEXT)은 줄마다 아래로 내려 그림. MTEXT 삽입점은 첫 줄의 위쪽, TEXT 는 글줄 바닥
           ctx.save(); ctx.translate(sx, sy); if (t.rot) ctx.rotate(-t.rot * Math.PI / 180);
@@ -1020,6 +1033,7 @@
           ctx.restore();
           if (++drawn >= 6000) break;
         }
+        ctx.globalAlpha = 1;
       }
 
       /* 2D DXF 렌더링 파이프라인 */
@@ -1459,9 +1473,7 @@
         const size = this.boundingBox.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z, 10);
 
-        this.controls.target.copy(center);
-
-        // 현재 카메라 뷰 방향 유지하면서 거리만 계산
+        // 현재 카메라 뷰 방향 유지하면서 거리만 계산 (방향은 목표점을 옮기기 전의 값으로 구한다: 옮긴 뒤에 구하면 이동·확대한 뒤 맞춤에서 화면이 기울어졌음)
         const fov = this.camera.fov * (Math.PI / 180);
         let dist = maxDim / (2 * Math.tan(fov / 2));
         dist *= 1.4; // 여백 40%
@@ -1470,9 +1482,10 @@
         if (dir.lengthSq() < 0.001) {
           dir.set(0, 0, 1);
         }
+        this.controls.target.copy(center);
         this.camera.position.copy(center).add(dir.multiplyScalar(dist));
         this.camera.near = dist / 100;
-        this.camera.far = dist * 100;
+        this.camera.far = Math.max(dist * 100, maxDim * 20);
         this.camera.updateProjectionMatrix();
         this.controls.update();
 
@@ -1580,5 +1593,6 @@
       app.loadSample('bracket-2d.dxf');
     });
   </script>
+  <script src="cad-tools.js"></script>
 </body>
 </html>

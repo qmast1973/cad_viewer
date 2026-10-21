@@ -57,13 +57,14 @@ const server = http.createServer(async (req, res) => {
         const hash = crypto.createHash('sha1').update(buffer).digest('hex');
         const cacheDir = path.join(os.tmpdir(), 'cad-viewer-cache');
         await fs.promises.mkdir(cacheDir, { recursive: true });
-        const lite = path.join(cacheDir, `${hash}.v2.cadlite`);
+        const isDxf = url.searchParams.get('type') === 'dxf';           // DXF 는 변환 단계 없이 바로 줄인다
+        const lite = path.join(cacheDir, `${hash}${isDxf ? '.dxf' : ''}.v3.cadlite`);
         let cached = true;
         if (!fs.existsSync(lite)) {
           cached = false;
-          tempDwg = path.join(cacheDir, `${hash}.dwg`);
+          tempDwg = path.join(cacheDir, `${hash}.${isDxf ? 'dxf' : 'dwg'}`);
           await fs.promises.writeFile(tempDwg, buffer);
-          await convertLite(tempDwg, lite);
+          await convertLite(tempDwg, lite, undefined, { dxf: isDxf });
         }
         const data = await fs.promises.readFile(lite);
         res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': data.length, 'X-Cache': cached ? 'hit' : 'miss' });

@@ -35,9 +35,21 @@ function dwgToDxf(dwgPath, dxfPath, timeoutMs = 600000) {
 // dwg2dxf 는 긴 MTEXT 안에 단독 줄바꿈을 쓰는 경우가 있어, 코드 자리에 숫자가 아닌 줄이 오면 앞 값의 이어짐으로 본다.
 const isCode = (s) => /^\s*-?\d{1,4}\s*$/.test(s);
 
+// 옛 DXF(2004 이하)는 글자가 도면 코드페이지(ANSI_949=한글 등)로 저장되어 있다. 앞부분의 $DWGCODEPAGE 로 정한다.
+async function detectEncoding(dxfPath) {
+  const fh = await fs.promises.open(dxfPath, 'r');
+  try {
+    const b = Buffer.alloc(65536); const { bytesRead } = await fh.read(b, 0, b.length, 0);
+    const head = b.slice(0, bytesRead).toString('latin1');
+    const m = /\$DWGCODEPAGE\s+3\s+ANSI_(\d+)/i.exec(head);
+    if (m) { const cp = m[1]; if (cp === '949') return 'euc-kr'; if (cp === '932') return 'shift_jis'; if (cp === '936') return 'gbk'; if (cp === '950') return 'big5'; if (cp === '1252') return 'windows-1252'; }
+    return 'utf-8';
+  } finally { await fh.close(); }
+}
+
 async function* pairs(dxfPath) {
   const stream = fs.createReadStream(dxfPath, { highWaterMark: 4 * 1024 * 1024 });
-  const dec = new TextDecoder('utf-8');
+  const dec = new TextDecoder(await detectEncoding(dxfPath));
   let rest = '', code = null, pending = null;
   const feed = function* (line) {
     if (line.endsWith('\r')) line = line.slice(0, -1);
@@ -382,7 +394,7 @@ function finalize(res, srcName) {
   sx.sort((p, q) => p - q); sy.sort((p, q) => p - q);
   const pick = (arr, f) => arr.length ? arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * f)))] : 0;
   const ox = pick(sx, 0.5), oy = pick(sy, 0.5);
-  const fit = { min: [pick(sx, 0.003) - ox, pick(sy, 0.003) - oy], max: [pick(sx, 0.997) - ox, pick(sy, 0.997) - oy] };
+  let fit = { min: [pick(sx, 0.003) - ox, pick(sy, 0.003) - oy], max: [pick(sx, 0.997) - ox, pick(sy, 0.997) - oy] };
 
   let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity, total = 0, offset = 0;
   const groups = [], bufs = [], layersUsed = new Set();
@@ -399,6 +411,12 @@ function finalize(res, srcName) {
     layersUsed.add(g.layer);
   }
   for (const t of out.texts) layersUsed.add(t.layer);
+  if (isFinite(minx)) {                                           // 멀리 떨어진 점이 없으면(맞춤 범위가 전체의 70% 이상) 전체 범위를 그대로 쓴다
+    const fw = fit.max[0] - fit.min[0], fh = fit.max[1] - fit.min[1], mx = fw * 0.05, my = fh * 0.05;
+    const full = { min: [minx, miny], max: [maxx, maxy] };
+    if (fw + 2 * mx >= 0.7 * (maxx - minx) && fh + 2 * my >= 0.7 * (maxy - miny)) fit = full;
+    else fit = { min: [fit.min[0] - mx, fit.min[1] - my], max: [fit.max[0] + mx, fit.max[1] + my] };
+  }
   const layers = [];
   for (const name of layersUsed) { const l = layerTable.get(name); layers.push({ name, aci: l ? l.aci : 7, off: !!(l && l.off) }); }
   for (const [name, l] of layerTable) if (!layersUsed.has(name)) layers.push({ name, aci: l.aci, off: !!l.off, empty: true });
@@ -417,16 +435,17 @@ function finalize(res, srcName) {
   return { buffer: Buffer.concat([lenBuf, json, body]), head };
 }
 
-async function convert(dwgPath, litePath, onProgress) {
-  const dxfPath = litePath + '.tmp.dxf';
+async function convert(inPath, litePath, onProgress, opts = {}) {
+  // opts.dxf = true 이면 입력이 이미 DXF 이므로 변환 단계를 건너뛴다 (입력 파일은 지우지 않음)
+  const dxfPath = opts.dxf ? inPath : litePath + '.tmp.dxf';
   try {
-    await dwgToDxf(dwgPath, dxfPath);
+    if (!opts.dxf) await dwgToDxf(inPath, dxfPath);
     const res = await dxfToLite(dxfPath, onProgress);
-    const { buffer, head } = finalize(res, path.basename(dwgPath));
+    const { buffer, head } = finalize(res, path.basename(inPath));
     await fs.promises.writeFile(litePath, buffer);
     return head.stats;
   } finally {
-    try { await fs.promises.unlink(dxfPath); } catch (e) {}
+    if (!opts.dxf) { try { await fs.promises.unlink(dxfPath); } catch (e) {} }
   }
 }
 
