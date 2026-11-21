@@ -7,9 +7,10 @@ import websockets
 
 ROOT = str(Path(__file__).resolve().parent.parent)
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
-DWG = args[0]
+DWG = args[0] if args else ''
 OUT = args[1] if len(args) > 1 else tempfile.gettempdir()
 MOBILE = '--mobile' in sys.argv
+SAMPLE = next((a[9:] for a in sys.argv if a.startswith('--sample=')), None)   # 예: --sample=sample.dwg (파일 선택 대신 샘플 목록에서 고름)
 LIVE = next((a[6:] for a in sys.argv if a.startswith('--url=')), None)   # 예: --url=https://qmast1973.github.io/cad_viewer/  (실제 배포본 시험)
 PORT, DBG = 8796, 9342
 CHROME = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
@@ -62,7 +63,10 @@ async def main():
             node = await send('DOM.querySelector', {'nodeId': doc['root']['nodeId'], 'selector': '#fileInput'})
             await ev("document.getElementById('status-stats').textContent = ''")
             t0 = time.time()
-            await send('DOM.setFileInputFiles', {'files': [DWG], 'nodeId': node['nodeId']})
+            if SAMPLE:
+                await ev("(()=>{const s=document.querySelector('select');s.value=%s;s.dispatchEvent(new Event('change'));})()" % json.dumps(SAMPLE))
+            else:
+                await send('DOM.setFileInputFiles', {'files': [DWG], 'nodeId': node['nodeId']})
             st = ''
             for _ in range(400):
                 await asyncio.sleep(1)
@@ -72,6 +76,7 @@ async def main():
             took = time.time() - t0
             check("서버 없이 DWG 가 열림(경고창 없음)", '선분' in (st or '') and not dialogs, f"{took:.1f}초 {st} {dialogs}")
             await asyncio.sleep(3)
+            print("        상태줄:", st, "| 경고창:", dialogs)
             info = json.loads(await ev("(()=>{const a=window.cadViewer.app,l=a.lite;return JSON.stringify({engine:l&&l.head.stats.engine,ver:l&&l.head.version,segs:l&&l.head.stats.segments,texts:l&&l.head.texts.length,layers:l&&l.head.layers.length,lines:l&&l.lines.length})})()"))
             check("Rust(wasm) 변환기가 만든 v2 도면", info.get('engine') == 'acadrust-direct-v2' and info.get('ver') == 2, info)
             err = await ev("(()=>{const a=window.cadViewer.app,gl=a.renderer.getContext();gl.getError();a.renderer.render(a.scene,a.camera);return gl.getError()})()")

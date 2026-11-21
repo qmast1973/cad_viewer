@@ -809,7 +809,7 @@
 
       /* DWG → cadlite: 브라우저 안의 wasm 변환기(작업자)로 바꾼다. 서버가 없어도(깃허브 페이지·폰) 열리고, 다 쓰면 작업자를 끝내 메모리를 돌려준다.
          wasm 을 못 쓰는 환경이면 로컬 서버(/api/dwg-lite)로 다시 시도한다. */
-      convertDwg(arrayBuf, name, onStatus) {
+      convertDwg(arrayBuf, name, isDxf) {
         const viaWasm = () => new Promise((resolve, reject) => {
           if (typeof Worker === 'undefined' || typeof WebAssembly === 'undefined') return reject(new Error('이 브라우저는 wasm 을 지원하지 않음'));
           let w;
@@ -817,10 +817,10 @@
           const done = (fn, v) => { try { w.terminate(); } catch (e) {} fn(v); };
           w.onmessage = (ev) => ev.data.ok ? done(resolve, ev.data.buf) : done(reject, new Error(ev.data.error));
           w.onerror = (ev) => done(reject, new Error(ev.message || '변환 작업자 오류'));
-          w.postMessage({ buf: arrayBuf, name }, [arrayBuf.slice ? arrayBuf : arrayBuf]);
+          w.postMessage({ buf: arrayBuf, name, dxf: !!isDxf }, [arrayBuf]);
         });
         const viaServer = async (buf) => {
-          const res = await fetch('/api/dwg-lite', { method: 'POST', body: buf });
+          const res = await fetch('/api/dwg-lite' + (isDxf ? '?type=dxf' : ''), { method: 'POST', body: buf });
           if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || `서버 변환 응답 실패 (${res.status})`); }
           return res.arrayBuffer();
         };
@@ -846,15 +846,14 @@
               alert(`DWG 도면 변환 실패: ${err.message}`);
             });
         } else if (ext === 'dxf') {
-          // 서버가 있으면 같은 가벼운 방식(찾기·측정 도구 사용 가능), 없으면(정적 주소) 예전 방식으로 연다
-          fetch('/api/dwg-lite?type=dxf', { method: 'POST', body: file })
-            .then(res => { if (!res.ok) throw new Error('no-server'); return res.arrayBuffer(); })
+          // 브라우저 안 wasm 변환기로 같은 가벼운 방식(DWG 와 같은 그리기·찾기·측정 도구)으로 연다. 안 되면 서버, 그것도 안 되면 예전 방식.
+          file.arrayBuffer()
+            .then(ab => this.convertDwg(ab, file.name, true))
             .then(buf => this.renderLite(buf, file.name))
-            .catch(() => {
+            .catch((e) => {
+              console.warn('[DXF 가벼운 방식 실패 → 예전 방식]', e.message);
               const reader = new FileReader();
-              reader.onload = (e) => {
-                this.renderDxf(e.target.result, file.name);
-              };
+              reader.onload = (ev) => { this.renderDxf(ev.target.result, file.name); };
               reader.readAsText(file);
             });
         } else if (ext === 'stl') {
