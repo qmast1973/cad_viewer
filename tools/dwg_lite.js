@@ -164,6 +164,7 @@ async function dxfToLite(dxfPath, onProgress) {
     switch (c) {
       case 8: ent.layer = v; break;
       case 62: ent.aci = parseInt(v, 10); break;
+      case 420: ent.tc = parseInt(v, 10); break;                // RGB(true color)
       case 67: ent.ps = parseInt(v, 10) === 1; break;           // 1 = 배치(종이) 공간
       case 230: ent.nz = parseFloat(v); break;
       case 2: ent.name = v; break;
@@ -195,6 +196,7 @@ async function dxfToLite(dxfPath, onProgress) {
       case 71: ent.f71 = parseInt(v, 10); break;
       case 72: ent.f72 = parseInt(v, 10); break;
       case 73: ent.f73 = parseInt(v, 10); break;
+      case 74: ent.f74 = parseInt(v, 10); break;
       default: break;
     }
   }
@@ -202,6 +204,7 @@ async function dxfToLite(dxfPath, onProgress) {
 
   // 4-2) 개체 → 선분 (블록은 한 번만 펼쳐 두고 INSERT 마다 변환해 복사)
   const aciOf = (e, ctx) => {                              // 색: 256 BYLAYER, 0 BYBLOCK(= -1 표식)
+    if (e.tc !== undefined && !Number.isNaN(e.tc)) return 0x1000000 | (e.tc & 0xffffff);   // RGB(true color)
     const a = e.aci;
     if (a === 0) return ctx.aci;
     if (a === 256 || a === undefined || Number.isNaN(a)) {
@@ -277,7 +280,7 @@ async function dxfToLite(dxfPath, onProgress) {
     for (const t of comp.texts) {
       const [x, y] = ap(T, t.x, t.y);
       const layer = t.layer === MARK ? ctx.layer : t.layer;
-      sink.texts.push({ x, y, h: t.h * sc, rot: t.rot + ang, s: t.s, layer, aci: resolveAci(t.aci, layer, ctx), mt: t.mt });
+      sink.texts.push({ x, y, h: t.h * sc, rot: t.rot + ang, s: t.s, layer, aci: resolveAci(t.aci, layer, ctx), mt: t.mt, al: t.al | 0 });
     }
   }
 
@@ -323,11 +326,18 @@ async function dxfToLite(dxfPath, onProgress) {
         emitPoly(sink, layer, aci, [[e.x, e.y], [e.x2, e.y2], [e.x3, e.y3], [e.x4 ?? e.x3, e.y4 ?? e.y3]], true, M); break;
       case 'TEXT': case 'MTEXT': case 'ATTRIB': {
         if (e.type === 'ATTRIB' && ((e.f70 || 0) & 1)) break;  // 숨김 속성
-        const aligned = e.type !== 'MTEXT' && ((e.f72 || 0) || (e.f73 || 0)) && e.x2 !== undefined;   // 맞춤 글자는 11번 점이 실제 위치
+        // 정렬 al = 가로(0 왼쪽·1 가운데·2 오른쪽)*4 + 세로(0 글줄 바닥·1 아래·2 가운데·3 위). 맞춤·채움(3·5)은 첫 점에서 시작
+        let ha = 0, va = 0;
+        if (e.type === 'MTEXT') { const a = e.f71 || 1; ha = (a - 1) % 3; va = [3, 2, 1][Math.floor((a - 1) / 3)] ?? 3; }
+        else {
+          const h = e.f72 || 0, v = (e.type === 'ATTRIB' ? e.f74 : e.f73) || 0;
+          if (h === 4) { ha = 1; va = 2; } else if (h === 1 || h === 2) { ha = h; va = v; } else if (h === 0) { va = v; }
+        }
+        const aligned = e.type !== 'MTEXT' && (ha || va) && e.x2 !== undefined;   // 정렬 글자는 11번 점이 기준
         const [tx, ty] = aligned ? ap(M, e.x2, e.y2) : ap(M, e.x, e.y);
         let rot = e.rot || 0;
         if (e.type === 'MTEXT' && e.x2 !== undefined && e.y2 !== undefined && !e.rot) rot = Math.atan2(e.y2, e.x2) / D2R;
-        sink.texts.push({ x: tx, y: ty, h: (e.r || 2.5) * Math.hypot(M[0], M[1]), rot: rot + Math.atan2(M[1], M[0]) / D2R, s: e.s || '', layer, aci, mt: e.type === 'MTEXT' ? 1 : 0 });
+        sink.texts.push({ x: tx, y: ty, h: (e.r || 2.5) * Math.hypot(M[0], M[1]), rot: rot + Math.atan2(M[1], M[0]) / D2R, s: e.s || '', layer, aci, mt: e.type === 'MTEXT' ? 1 : 0, al: ha * 4 + va });
         break;
       }
       case 'DIMENSION':                                        // 치수는 모양을 그려 둔 익명 블록(*D…)을 삽입
@@ -398,7 +408,7 @@ function finalize(res, srcName) {
   for (const name of layersUsed) { const l = layerTable.get(name); layers.push({ name, aci: l ? l.aci : 7, off: !!(l && l.off) }); }
   for (const [name, l] of layerTable) if (!layersUsed.has(name)) layers.push({ name, aci: l.aci, off: !!l.off, empty: true });
 
-  const texts = out.texts.map((t) => ({ x: +(t.x - ox).toFixed(3), y: +(t.y - oy).toFixed(3), h: +t.h.toFixed(3), rot: +t.rot.toFixed(1), s: t.s, layer: t.layer, aci: t.aci, mt: t.mt }));
+  const texts = out.texts.map((t) => ({ x: +(t.x - ox).toFixed(3), y: +(t.y - oy).toFixed(3), h: +t.h.toFixed(3), rot: +t.rot.toFixed(1), s: t.s, layer: t.layer, aci: t.aci, mt: t.mt, al: t.al | 0 }));
   const head = {
     version: 1, source: srcName, origin: [ox, oy],
     bounds: { min: [minx, miny], max: [maxx, maxy] }, fit, layers, groups, texts,

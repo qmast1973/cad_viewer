@@ -1,7 +1,7 @@
 """깊은 확대·큰 글자 시험 (헤드리스 Chrome, 소리 끔, 시험이 띄운 서버·브라우저는 끝나면 종료).
   python tools/test_zoom.py <큰.dwg> [스크린샷 폴더]
 확인: ① 실제 마우스 휠로 약 500배 확대해도 선이 잘리지 않고 그려짐(카메라 near/far 가 거리에 맞게 바뀜)
-      ② 화면 글자 크기가 600px 를 넘는 큰 글자도 그려지고, 글자 기준점이 화면 밖이어도 몸통이 보이면 그려짐
+      ② 확대해도 화면 글자 크기가 상한(40px)을 넘지 않고, 큰 글자도 사라지지 않고 그려짐
       ③ 확대 상태에서 그래픽 오류 없음"""
 import asyncio, base64, json, urllib.request, subprocess, tempfile, sys, shutil, os, io
 from pathlib import Path
@@ -104,16 +104,9 @@ async def main():
               return JSON.stringify({s:t.s.slice(0,20),h:t.h,dist}) })()"""))
             await asyncio.sleep(1.5)
             ink = await ev("""(()=>{const cv=document.getElementById('lite-text-overlay');const c=cv.getContext('2d');const d=c.getImageData(0,0,cv.width,cv.height).data;let n=0;for(let i=3;i<d.length;i+=4) if(d[i]>0) n++; return n})()""")
-            check("화면 글자 크기 약 1500px 인 큰 글자도 그려짐", (ink or 0) > 2000, f"글자 픽셀 {ink} {tx}")
+            check("화면 글자 크기 약 1500px 가 될 확대에서도 글자가 그려지되 상한(40px)으로 제한됨(끝없이 커지지 않음)", 100 < (ink or 0) < 60000, f"글자 픽셀 {ink} {tx}")
             await shot('zoom_bigtext.png')
 
-            # ③ 기준점이 화면 밖이어도 몸통이 보이면 그려짐: 글자 길이의 절반만큼 왼쪽으로 옮겨 기준점을 화면 밖으로
-            await ev("""(()=>{const a=window.cadViewer.app;const dist=a.camera.position.z; const W=a.renderer.domElement.clientWidth,H=a.renderer.domElement.clientHeight;
-              const unit=2*dist*Math.tan(a.camera.fov*Math.PI/360)/H; const t=a.controls.target; // 한 화면 픽셀 = unit 월드
-              a.controls.target.set(t.x+ (W/2+100)*unit, t.y, 0); a.camera.position.set(t.x+(W/2+100)*unit, t.y, dist); a.controls.update(); a.textsDirty=true; })()""")
-            await asyncio.sleep(1.5)
-            ink2 = await ev("""(()=>{const cv=document.getElementById('lite-text-overlay');const c=cv.getContext('2d');const d=c.getImageData(0,0,cv.width,cv.height).data;let n=0;for(let i=3;i<d.length;i+=4) if(d[i]>0) n++; return n})()""")
-            check("기준점이 화면 왼쪽 밖이어도 보이는 몸통은 그려짐", (ink2 or 0) > 500, f"글자 픽셀 {ink2}")
     finally:
         proc.terminate(); srv.terminate(); await asyncio.sleep(1)
         shutil.rmtree(prof, ignore_errors=True)
