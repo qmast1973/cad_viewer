@@ -10,6 +10,7 @@ args = [a for a in sys.argv[1:] if not a.startswith('--')]
 DWG = args[0]
 OUT = args[1] if len(args) > 1 else tempfile.gettempdir()
 MOBILE = '--mobile' in sys.argv
+LIVE = next((a[6:] for a in sys.argv if a.startswith('--url=')), None)   # 예: --url=https://qmast1973.github.io/cad_viewer/  (실제 배포본 시험)
 PORT, DBG = 8796, 9342
 CHROME = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
 fails = []
@@ -22,14 +23,14 @@ def check(name, ok, info=""):
 
 
 async def main():
-    srv = subprocess.Popen([sys.executable, '-m', 'http.server', str(PORT), '--bind', '127.0.0.1'], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    srv = None if LIVE else subprocess.Popen([sys.executable, '-m', 'http.server', str(PORT), '--bind', '127.0.0.1'], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     prof = tempfile.mkdtemp()
     proc = subprocess.Popen([CHROME, '--headless=new', f'--remote-debugging-port={DBG}', f'--user-data-dir={prof}', '--disable-cache', '--mute-audio', '--no-first-run',
-                             '--window-size=1280,800', '--use-angle=d3d11', '--ignore-gpu-blocklist', '--enable-gpu', f'http://127.0.0.1:{PORT}/index.html'])
+                             '--window-size=1280,800', '--use-angle=d3d11', '--ignore-gpu-blocklist', '--enable-gpu', (LIVE or f'http://127.0.0.1:{PORT}/') + 'index.html'])
     try:
         await asyncio.sleep(5)
         tabs = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{DBG}/json').read().decode())
-        target = [t for t in tabs if t.get('type') == 'page' and str(PORT) in t.get('url', '')][0]
+        target = [t for t in tabs if t.get('type') == 'page' and (LIVE.split('//')[1].split('/')[0] if LIVE else str(PORT)) in t.get('url', '')][0]
         async with websockets.connect(target['webSocketDebuggerUrl'], max_size=None) as ws:
             n = 0
 
@@ -56,7 +57,7 @@ async def main():
             await send('Page.enable')
             await send('Emulation.setDeviceMetricsOverride', {'width': 390 if MOBILE else 1280, 'height': 844 if MOBILE else 800, 'deviceScaleFactor': 1, 'mobile': MOBILE})
             post = await ev("fetch('/api/dwg-lite',{method:'POST',body:'x'}).then(r=>r.status)")
-            check("시험 서버는 /api 가 없음(깃허브 페이지와 같은 조건, POST 405/501)", post in (405, 501), post)
+            check("서버 변환(/api)이 없는 주소", post in (404, 405, 501), post)
             doc = await send('DOM.getDocument')
             node = await send('DOM.querySelector', {'nodeId': doc['root']['nodeId'], 'selector': '#fileInput'})
             await ev("document.getElementById('status-stats').textContent = ''")
@@ -86,7 +87,7 @@ async def main():
             mem = await ev("(()=>{const m=performance.memory;return m?Math.round(m.usedJSHeapSize/1e6):null})()")
             print("        JS 메모리(MB):", mem)
     finally:
-        proc.terminate(); srv.terminate(); await asyncio.sleep(1)
+        proc.terminate(); srv and srv.terminate(); await asyncio.sleep(1)
         shutil.rmtree(prof, ignore_errors=True)
     print("\n>> 모두 통과 <<" if not fails else f"\n>> 실패 {len(fails)}건: {fails}")
     sys.exit(1 if fails else 0)
