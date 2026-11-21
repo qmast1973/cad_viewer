@@ -807,33 +807,44 @@
         document.getElementById('layerList').innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px;">레이어가 없습니다.</div>';
       }
 
+      /* DWG → cadlite: 브라우저 안의 wasm 변환기(작업자)로 바꾼다. 서버가 없어도(깃허브 페이지·폰) 열리고, 다 쓰면 작업자를 끝내 메모리를 돌려준다.
+         wasm 을 못 쓰는 환경이면 로컬 서버(/api/dwg-lite)로 다시 시도한다. */
+      convertDwg(arrayBuf, name, onStatus) {
+        const viaWasm = () => new Promise((resolve, reject) => {
+          if (typeof Worker === 'undefined' || typeof WebAssembly === 'undefined') return reject(new Error('이 브라우저는 wasm 을 지원하지 않음'));
+          let w;
+          try { w = new Worker('dwg-worker.js'); } catch (e) { return reject(e); }
+          const done = (fn, v) => { try { w.terminate(); } catch (e) {} fn(v); };
+          w.onmessage = (ev) => ev.data.ok ? done(resolve, ev.data.buf) : done(reject, new Error(ev.data.error));
+          w.onerror = (ev) => done(reject, new Error(ev.message || '변환 작업자 오류'));
+          w.postMessage({ buf: arrayBuf, name }, [arrayBuf.slice ? arrayBuf : arrayBuf]);
+        });
+        const viaServer = async (buf) => {
+          const res = await fetch('/api/dwg-lite', { method: 'POST', body: buf });
+          if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || `서버 변환 응답 실패 (${res.status})`); }
+          return res.arrayBuffer();
+        };
+        const keep = arrayBuf.slice(0);          // 작업자로 넘기면 원본이 비므로 서버 재시도용 사본(약 30MB)
+        return viaWasm().catch((e1) => {
+          console.warn('[wasm 변환 실패 → 서버 방식 시도]', e1.message);
+          return viaServer(keep).catch((e2) => { throw new Error(`브라우저 변환 실패: ${e1.message} / 서버 변환 실패: ${e2.message}`); });
+        });
+      }
+
       loadFile(file) {
         this.currentFilename = file.name;
         const ext = file.name.split('.').pop().toLowerCase();
         this.showLoading(`${file.name} 분석 중...`);
 
         if (ext === 'dwg') {
-          this.showLoading(`${file.name} (AutoCAD DWG 변환 및 파싱 중...)`);
-          // 큰 도면도 열리도록 서버가 원본 LibreDWG로 변환해 가벼운 이진(cadlite)으로 돌려준다 (27MB급 도면 약 30초, 같은 파일은 캐시로 즉시)
-          fetch('/api/dwg-lite', {
-            method: 'POST',
-            body: file
-          })
-          .then(async res => {
-            if (!res.ok) {
-              const errJson = await res.json().catch(() => ({}));
-              throw new Error(errJson.error || `서버 변환 응답 실패 (${res.status})`);
-            }
-            this.showLoading(`${file.name} (도면 내려받는 중...)`);
-            return res.arrayBuffer();
-          })
-          .then(buf => {
-            this.renderLite(buf, file.name);
-          })
-          .catch(err => {
-            this.hideLoading();
-            alert(`DWG 도면 변환 실패: ${err.message}\nstart-viewer.bat 으로 로컬 서버를 켠 뒤 http://127.0.0.1:8795/ 에서 열어 주세요.`);
-          });
+          this.showLoading(`${file.name} (브라우저에서 DWG 변환 중... 큰 도면은 몇십 초 걸립니다)`);
+          file.arrayBuffer()
+            .then(ab => this.convertDwg(ab, file.name))
+            .then(buf => { this.renderLite(buf, file.name); })
+            .catch(err => {
+              this.hideLoading();
+              alert(`DWG 도면 변환 실패: ${err.message}`);
+            });
         } else if (ext === 'dxf') {
           // 서버가 있으면 같은 가벼운 방식(찾기·측정 도구 사용 가능), 없으면(정적 주소) 예전 방식으로 연다
           fetch('/api/dwg-lite?type=dxf', { method: 'POST', body: file })
@@ -874,15 +885,9 @@
           fetch(url)
             .then(res => {
               if (!res.ok) throw new Error('DWG 샘플 로드 실패');
-              return res.blob();
-            })
-            .then(blob => {
-              return fetch('/api/dwg-lite', { method: 'POST', body: blob });
-            })
-            .then(async res => {
-              if (!res.ok) throw new Error('DWG 변환 실패');
               return res.arrayBuffer();
             })
+            .then(ab => this.convertDwg(ab, name))
             .then(buf => {
               this.renderLite(buf, name);
             })
