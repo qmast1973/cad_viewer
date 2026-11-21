@@ -1,5 +1,5 @@
-// 큰 DWG용 변환기: LibreDWG 원본 프로그램(dwg2dxf.exe)으로 DXF를 만들고,
-// 그 DXF를 한 줄씩 흘려 읽으며(메모리에 통째로 올리지 않음) "가벼운 도면(cadlite)" 이진 데이터로 줄인다.
+// 큰 도면용 변환기: DWG 는 bin/dwg2lite.exe(Rust)가 바로 cadlite 로 만들고, DXF 입력은 이 파일이
+// DXF를 한 줄씩 흘려 읽으며(메모리에 통째로 올리지 않음) "가벼운 도면(cadlite)" 이진 데이터로 줄인다.
 //   사용: node dwg_lite.js <입력.dwg> <출력.cadlite>      (또는 require('./dwg_lite').convert)
 // cadlite 형식: [4바이트 JSON 길이(LE)] [JSON 머리글] [Float32 좌표 묶음들(x,y 쌍)]
 //   머리글 = { origin:[ox,oy], bounds:{min,max}, fit:{min,max}, layers:[{name,aci,off}],
@@ -10,28 +10,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const DWG2DXF = path.join(__dirname, '..', 'bin', 'libredwg', 'dwg2dxf.exe');
 const MARK = String.fromCharCode(0);        // 블록 안 "레이어 0" 표식: 삽입할 때 INSERT 의 레이어로 바뀐다
 
-// ── 1) DWG → DXF (원본 LibreDWG, 별도 프로세스) ──────────────────────────
-function dwgToDxf(dwgPath, dxfPath, timeoutMs = 600000) {
-  return new Promise((resolve, reject) => {
-    if (!fs.existsSync(DWG2DXF)) return reject(new Error('bin/libredwg/dwg2dxf.exe 가 없습니다.'));
-    try { fs.unlinkSync(dxfPath); } catch (e) {}
-    const p = spawn(DWG2DXF, ['-y', '-o', dxfPath, dwgPath], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-    let err = '';
-    p.stderr.on('data', (d) => { if (err.length < 4000) err += d.toString(); });
-    const timer = setTimeout(() => { p.kill(); reject(new Error('DWG 변환 시간 초과')); }, timeoutMs);
-    p.on('error', (e) => { clearTimeout(timer); reject(e); });
-    p.on('close', (code) => {
-      clearTimeout(timer);
-      if (fs.existsSync(dxfPath) && fs.statSync(dxfPath).size > 100) return resolve();   // 경고(Warning)만 있어도 결과가 있으면 성공
-      reject(new Error(`dwg2dxf 실패(코드 ${code}): ${err.trim().slice(-300)}`));
-    });
-  });
-}
-
-// ── 2) DXF 한 줄씩 읽기 (코드/값 쌍) ──────────────────────────────────────
 // dwg2dxf 는 긴 MTEXT 안에 단독 줄바꿈을 쓰는 경우가 있어, 코드 자리에 숫자가 아닌 줄이 오면 앞 값의 이어짐으로 본다.
 const isCode = (s) => /^\s*-?\d{1,4}\s*$/.test(s);
 
@@ -433,8 +413,7 @@ function finalize(res, srcName) {
 }
 
 // ── 6) DWG 직접 읽기(Rust acadrust): DXF 를 거치지 않는다 (2026-11-21) ────────────
-// bin/dwg2lite.exe 가 있으면 DWG 를 바로 cadlite 로 만든다(27MB 도면 약 3초, LibreDWG 방식 약 29초).
-// 한글 레이어·글자가 깨지지 않는 장점이 있다. 실패하면 아래의 LibreDWG 방식으로 다시 시도한다.
+// DWG 는 bin/dwg2lite.exe(Rust, DXF 를 거치지 않음)로 바로 cadlite 로 만든다. 27MB 도면 약 3초. 입력이 DXF 이면 아래 dxfToLite 로 읽는다.
 const DIRECT = path.join(__dirname, '..', 'bin', 'dwg2lite.exe');
 function runDirect(inPath, litePath, timeoutMs = 600000) {
   return new Promise((resolve, reject) => {
@@ -461,29 +440,19 @@ function readLiteStats(litePath) {
 }
 
 async function convert(inPath, litePath, onProgress, opts = {}) {
-  // opts.dxf = true 이면 입력이 이미 DXF 이므로 변환 단계를 건너뛴다 (입력 파일은 지우지 않음)
-  if (!opts.dxf && !opts.noDirect && fs.existsSync(DIRECT)) {
-    try {
-      await runDirect(inPath, litePath);
-      return readLiteStats(litePath);
-    } catch (e) {
-      console.error('[직접 변환 실패 → LibreDWG 방식으로 다시 시도]', e.message);
-      try { fs.unlinkSync(litePath); } catch (e2) {}
-    }
+  // opts.dxf = true 이면 입력이 DXF 이므로 JS 로 읽는다(입력 파일은 지우지 않음). DWG 는 dwg2lite.exe 만 쓴다.
+  if (!opts.dxf) {
+    if (!fs.existsSync(DIRECT)) throw new Error('bin/dwg2lite.exe 가 없습니다. 작업/DWG직접읽기 에서 cargo build --release 후 복사하세요.');
+    await runDirect(inPath, litePath);
+    return readLiteStats(litePath);
   }
-  const dxfPath = opts.dxf ? inPath : litePath + '.tmp.dxf';
-  try {
-    if (!opts.dxf) await dwgToDxf(inPath, dxfPath);
-    const res = await dxfToLite(dxfPath, onProgress);
-    const { buffer, head } = finalize(res, path.basename(inPath));
-    await fs.promises.writeFile(litePath, buffer);
-    return head.stats;
-  } finally {
-    if (!opts.dxf) { try { await fs.promises.unlink(dxfPath); } catch (e) {} }
-  }
+  const res = await dxfToLite(inPath, onProgress);
+  const { buffer, head } = finalize(res, path.basename(inPath));
+  await fs.promises.writeFile(litePath, buffer);
+  return head.stats;
 }
 
-module.exports = { convert, dwgToDxf, dxfToLite, finalize };
+module.exports = { convert, dxfToLite, finalize };
 
 if (require.main === module) {
   const [, , i, o] = process.argv;

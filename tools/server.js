@@ -41,7 +41,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = decodeURIComponent(url.pathname);
 
-  // 큰 도면용: 원본 LibreDWG(dwg2dxf.exe)로 변환 → 가벼운 도면(cadlite) 이진으로 줄여 돌려줌. 같은 파일은 캐시를 다시 쓴다.
+  // 큰 도면용: Rust 변환기(bin/dwg2lite.exe)로 변환 → 가벼운 도면(cadlite) 이진으로 줄여 돌려줌. 같은 파일은 캐시를 다시 쓴다.
   if (req.method === 'POST' && pathname === '/api/dwg-lite') {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));

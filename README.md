@@ -49,7 +49,7 @@ DWG FastView 의 기능 구성(찾기·측정·도면층 관리·글꼴·보기�
 ### 큰 DWG 열기 (2026-10-21)
 **DWG는 서버가 필요합니다**: `start-viewer.bat` 을 실행해 로컬 서버(8795)를 켠 뒤 `http://127.0.0.1:8795/index.html` 로 여세요. GitHub Pages 같은 정적 주소에서는 변환 서버가 없어 DWG가 "서버 변환 응답 실패 (405)" 로 실패합니다(DXF·STL·OBJ는 가능). 같은 와이파이의 폰에서는 `http://<PC주소>:8795/` 로 엽니다.
 
-26MB·42MB급 실무 도면도 열립니다. 서버(`tools/server.js`)가 원본 LibreDWG(`bin/libredwg/dwg2dxf.exe`)로 변환한 뒤 `tools/dwg_lite.js` 가 선분·글자만 뽑아 가벼운 이진(`.cadlite`)으로 만들어 화면에 보냅니다. 처음 열기 27MB 약 38초, 같은 파일 다시 열기 약 1초(`%TEMP%\\cad-viewer-cache`). 사용 전 `bin/libredwg/` 에 LibreDWG 0.14 win64 릴리스를 풀어 두어야 합니다(저장소에는 포함하지 않음).
+26MB·42MB급 실무 도면도 열립니다. 서버(`tools/server.js`)가 Rust 변환기(`bin/dwg2lite.exe`)로 변환한 뒤 `tools/dwg_lite.js` 가 선분·글자만 뽑아 가벼운 이진(`.cadlite`)으로 만들어 화면에 보냅니다. 처음 열기 27MB 약 38초, 같은 파일 다시 열기 약 1초(`%TEMP%\\cad-viewer-cache`). 사용 전 `bin/libredwg/` 에 LibreDWG 0.14 win64 릴리스를 풀어 두어야 합니다(저장소에는 포함하지 않음).
 - 직접 변환: `node tools/dwg_lite.js <입력.dwg> <출력.cadlite>` · 시험: `python tools/test_big_dwg.py <큰.dwg>`
 - 아직 그리지 않는 것: HATCH·MULTILEADER·LEADER·REGION·OLE (SPLINE 은 제어점 연결선으로 근사).
 
@@ -106,5 +106,5 @@ python C:\CnvWorkSpace\작업\cad-viewer\tools\test_cad.py
 
 
 ## 큰 도면: Rust 직접 변환 (2026-11-22)
-`bin/dwg2lite.exe`(소스 `../DWG직접읽기/`, acadrust 라이브러리, 빌드는 `cargo build --release`)가 있으면 서버가 DWG 를 DXF 없이 바로 `.cadlite` 로 만든다(없거나 실패하면 LibreDWG 경로).
+`bin/dwg2lite.exe`(소스 `../DWG직접읽기/`, acadrust 라이브러리, 빌드는 `cargo build --release`)가 있으면 서버가 DWG 를 DXF 없이 바로 `.cadlite` 로 만든다(없으면 큰 DWG 는 열리지 않음; 작은 DWG 는 브라우저 Wasm 으로 열림).
 블록을 한 번만 저장하는 v2 형식이라 32MB 도면이 823MB → 약 69MB 이고, 한글이 깨지지 않는다. 시험·한계·함정은 스킬 `cad-viewer` 와 `진행기록.md` 참고.
