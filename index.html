@@ -564,6 +564,9 @@
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.08;
         this.controls.screenSpacePanning = true;
+        // 확대·축소·이동할 때마다 카메라의 가까운/먼 면을 현재 거리에 맞춘다.
+        // (전체 보기 때 한 번만 정하면 약 100배 이상 확대할 때 도면이 가까운 면에 잘려 사라진다: 2026-11-21 시험으로 재현·수정)
+        this.controls.addEventListener('change', () => this.updateClipPlanes());
 
         // 조명 구성 (3D 모델용)
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
@@ -589,6 +592,7 @@
         const animate = () => {
           requestAnimationFrame(animate);
           this.controls.update();
+          this.cullInstances();
           this.renderer.render(this.scene, this.camera);
           this.drawLiteTexts();
         };
@@ -966,7 +970,98 @@
             lines.push({ obj, aci: g.aci });
           });
 
-          this.lite = { head, lines, texts: head.texts, fit: head.fit };
+          // v2(블록 한 번만 저장 + 삽입 표): 블록 조각을 그래픽 카드 인스턴스 그리기로 삽입 수만큼 그린다.
+          // 같은 (블록 조각, 레이어, 색)인 삽입은 한 덩어리로 묶는다. 색 표식: layer "\u0000" = 삽입의 레이어, aci -1 = 삽입의 색, -2 = 레이어 색.
+          if (head.version === 2 && head.blocks && head.instCount) {
+            const iv = new DataView(buf, base + head.instOffset, head.instCount * 36);
+            const posAttrs = new Map();
+            const buckets = new Map();
+            for (let i = 0; i < head.instCount; i++) {
+              const o = i * 36;
+              const b = iv.getUint32(o, true), li = iv.getUint32(o + 4, true), ia = iv.getInt32(o + 8, true);
+              const blk = head.blocks[b];
+              if (!blk) continue;
+              const instLayer = head.layers[li] ? head.layers[li].name : '0';
+              for (let gi = 0; gi < blk.groups.length; gi++) {
+                const g = blk.groups[gi];
+                const layer = g.layer === '\u0000' ? instLayer : g.layer;
+                const li2 = this.layers.get(layer);
+                if (!li2) continue;
+                const aci = g.aci === -1 ? ia : (g.aci === -2 ? li2.colorNumber : g.aci);
+                const key = b + '|' + gi + '|' + layer + '|' + aci;
+                let bk = buckets.get(key);
+                if (!bk) { bk = { b, gi, g, layer, aci, idx: [] }; buckets.set(key, bk); }
+                bk.idx.push(i);
+              }
+            }
+            const VS = 'attribute vec3 iA; attribute vec3 iB; void main(){ vec2 p = position.xy; vec2 q = vec2(iA.x*p.x + iA.y*p.y + iA.z, iB.x*p.x + iB.y*p.y + iB.z); gl_Position = projectionMatrix * modelViewMatrix * vec4(q, 0.0, 1.0); }';
+            // #include 는 줄 맨 앞에 있어야 three 가 알아본다(한 줄에 쓰면 컴파일 실패 → 인스턴스가 하나도 안 그려짐: 2026-11-21 실제로 겪음)
+            const FS = 'uniform vec3 color;\nuniform float opacity;\nvoid main() {\n  gl_FragColor = vec4(color, opacity);\n#include <colorspace_fragment>\n}\n';
+            for (const bk of buckets.values()) {
+              const n = bk.idx.length;
+              const A = new Float32Array(n * 3), B = new Float32Array(n * 3);
+              for (let k = 0; k < n; k++) {
+                const o = bk.idx[k] * 36 + 12;           // a,b,c,d,e,f
+                const a = iv.getFloat32(o, true), b2 = iv.getFloat32(o + 4, true), c = iv.getFloat32(o + 8, true), d = iv.getFloat32(o + 12, true), e = iv.getFloat32(o + 16, true), f = iv.getFloat32(o + 20, true);
+                A[k * 3] = a; A[k * 3 + 1] = c; A[k * 3 + 2] = e;
+                B[k * 3] = b2; B[k * 3 + 1] = d; B[k * 3 + 2] = f;
+              }
+              const pkey = bk.b + '|' + bk.gi;
+              let pos = posAttrs.get(pkey);
+              if (!pos) { pos = new THREE.BufferAttribute(new Float32Array(buf, base + bk.g.offset * 4, bk.g.count), 2); posAttrs.set(pkey, pos); }
+              // 블록 조각의 자체 범위(눈금 잡기·덩어리 범위 계산용)
+              let bb = bk.g._bb;
+              if (!bb) {
+                const p = pos.array; bb = [Infinity, Infinity, -Infinity, -Infinity];
+                for (let i = 0; i < p.length; i += 2) { if (p[i] < bb[0]) bb[0] = p[i]; if (p[i] > bb[2]) bb[2] = p[i]; if (p[i + 1] < bb[1]) bb[1] = p[i + 1]; if (p[i + 1] > bb[3]) bb[3] = p[i + 1]; }
+                bk.g._bb = bb;
+              }
+              // 삽입을 위치순(Z 곡선)으로 정렬해 512개씩 덩어리로 나눈다. 덩어리마다 범위를 기억해 두었다가
+              // 화면 밖 덩어리는 그리지 않는다(cullInstances: 약한 그래픽 카드·휴대폰에서 확대했을 때 빨라지게).
+              const wb = new Float32Array(n * 4), keys = new Uint32Array(n);
+              const FW = Math.max(bmax[0] - bmin[0], 1e-9), FH = Math.max(bmax[1] - bmin[1], 1e-9);
+              const part = (x) => { x &= 0x3ff; x = (x | (x << 8)) & 0x00FF00FF; x = (x | (x << 4)) & 0x0F0F0F0F; x = (x | (x << 2)) & 0x33333333; x = (x | (x << 1)) & 0x55555555; return x >>> 0; };
+              for (let k = 0; k < n; k++) {
+                let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+                for (let c = 0; c < 4; c++) {
+                  const px = c & 1 ? bb[2] : bb[0], py = c & 2 ? bb[3] : bb[1];
+                  const tx = A[k * 3] * px + A[k * 3 + 1] * py + A[k * 3 + 2], ty = B[k * 3] * px + B[k * 3 + 1] * py + B[k * 3 + 2];
+                  if (tx < x0) x0 = tx; if (tx > x1) x1 = tx; if (ty < y0) y0 = ty; if (ty > y1) y1 = ty;
+                }
+                wb[k * 4] = x0; wb[k * 4 + 1] = y0; wb[k * 4 + 2] = x1; wb[k * 4 + 3] = y1;
+                const mx = Math.min(1023, Math.max(0, Math.floor(((x0 + x1) / 2 - bmin[0]) / FW * 1024))), my = Math.min(1023, Math.max(0, Math.floor(((y0 + y1) / 2 - bmin[1]) / FH * 1024)));
+                keys[k] = (part(mx) | (part(my) << 1)) >>> 0;
+              }
+              const order = Array.from({ length: n }, (_, i) => i).sort((p, q) => keys[p] - keys[q]);
+              const CHUNK = 512;
+              for (let s0 = 0; s0 < n; s0 += CHUNK) {
+                const m = Math.min(CHUNK, n - s0);
+                const A2 = new Float32Array(m * 3), B2 = new Float32Array(m * 3);
+                let cx0 = Infinity, cy0 = Infinity, cx1 = -Infinity, cy1 = -Infinity;
+                for (let j = 0; j < m; j++) {
+                  const k = order[s0 + j];
+                  A2[j * 3] = A[k * 3]; A2[j * 3 + 1] = A[k * 3 + 1]; A2[j * 3 + 2] = A[k * 3 + 2];
+                  B2[j * 3] = B[k * 3]; B2[j * 3 + 1] = B[k * 3 + 1]; B2[j * 3 + 2] = B[k * 3 + 2];
+                  if (wb[k * 4] < cx0) cx0 = wb[k * 4]; if (wb[k * 4 + 1] < cy0) cy0 = wb[k * 4 + 1]; if (wb[k * 4 + 2] > cx1) cx1 = wb[k * 4 + 2]; if (wb[k * 4 + 3] > cy1) cy1 = wb[k * 4 + 3];
+                }
+                const geom = new THREE.InstancedBufferGeometry();
+                geom.setAttribute('position', pos);
+                geom.setAttribute('iA', new THREE.InstancedBufferAttribute(A2, 3));
+                geom.setAttribute('iB', new THREE.InstancedBufferAttribute(B2, 3));
+                geom.instanceCount = m;
+                geom.boundingSphere = new THREE.Sphere(center.clone(), radius);
+                const mat = new THREE.ShaderMaterial({ uniforms: { color: { value: new THREE.Color(getAciColor(bk.aci, this.isDarkTheme)) }, opacity: { value: 1 } }, vertexShader: VS, fragmentShader: FS });
+                mat.color = mat.uniforms.color.value;          // 기존 코드(테마 바꿀 때 색 다시 입히기)와 같은 방법으로 쓰이게 함
+                Object.defineProperty(mat, 'opacity', { get() { return this.uniforms.opacity.value; }, set(v) { this.uniforms.opacity.value = v; } });
+                const obj = new THREE.LineSegments(geom, mat);
+                obj.frustumCulled = false;
+                this.layers.get(bk.layer).group.add(obj);
+                lines.push({ obj, aci: bk.aci, inst: { A: A2, B: B2, n: m, bb }, box: [cx0, cy0, cx1, cy1] });
+              }
+            }
+          }
+
+          this.lite = { head, lines, texts: head.texts, fit: head.fit, chunks: lines.filter(l => l.box) };
           this.fitBox = new THREE.Box3(new THREE.Vector3(bmin[0], bmin[1], 0), new THREE.Vector3(bmax[0], bmax[1], 0));
           this.textsDirty = true;
 
@@ -984,6 +1079,56 @@
           alert(`도면 표시 실패: ${err.message}`);
         } finally {
           this.hideLoading();
+        }
+      }
+
+      /* 화면 밖 인스턴스 덩어리는 그리지 않는다. 위에서 내려다보는 2D 보기에서만 쓰고(기울이면 모두 그림),
+         덩어리 범위가 화면 범위와 겹치는지만 본다. this.cullEnabled = false 로 끌 수 있다(비교 시험용). */
+      cullInstances() {
+        const lite = this.lite;
+        if (!lite || !lite.chunks || lite.chunks.length === 0) return;
+        const showAll = () => { if (!lite.allShown) { lite.chunks.forEach(l => { l.obj.visible = true; }); lite.allShown = true; lite.cullSig = null; } };
+        if (this.cullEnabled === false) { showAll(); return; }
+        const cam = this.camera;
+        cam.updateMatrixWorld();
+        const e = cam.matrixWorld.elements, pj = cam.projectionMatrix.elements;
+        const sig = e.join(',') + '|' + pj[0] + ',' + pj[5];
+        if (sig === lite.cullSig) return;
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        const v = new THREE.Vector3(), dir = new THREE.Vector3();
+        for (const [nx, ny] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+          v.set(nx, ny, 0.5).unproject(cam);
+          dir.copy(v).sub(cam.position).normalize();
+          const t = Math.abs(dir.z) > 1e-6 ? -cam.position.z / dir.z : -1;
+          if (!(t > 0)) { showAll(); return; }                         // 평면과 만나지 않는 기울기: 모두 그림
+          const wx = cam.position.x + dir.x * t, wy = cam.position.y + dir.y * t;
+          if (wx < x0) x0 = wx; if (wx > x1) x1 = wx; if (wy < y0) y0 = wy; if (wy > y1) y1 = wy;
+        }
+        const mg = Math.max(x1 - x0, y1 - y0) * 0.03;                  // 여유 3%
+        x0 -= mg; y0 -= mg; x1 += mg; y1 += mg;
+        lite.cullSig = sig; lite.allShown = false;
+        lite.culled = 0;
+        for (const l of lite.chunks) {
+          const b = l.box;
+          const vis = !(b[2] < x0 || b[0] > x1 || b[3] < y0 || b[1] > y1);
+          l.obj.visible = vis;
+          if (!vis) lite.culled++;
+        }
+      }
+
+      /* 큰 도면(2D): 카메라 가까운/먼 면을 목표점까지의 거리에 맞춘다. 도면은 z=0 평면이라 거리 d 근처에 있고,
+         기울여 봐도 d ± 도면 크기 안에 들어온다. */
+      updateClipPlanes() {
+        if (!this.lite) return;
+        const d = Math.max(this.camera.position.distanceTo(this.controls.target), 1e-6);
+        const b = this.fitBox;
+        const m = b ? Math.max(b.max.x - b.min.x, b.max.y - b.min.y, 10) : 1000;
+        const near = Math.max(d / 1000, 1e-6);
+        const far = d * 2 + m * 2;
+        if (Math.abs(near - this.camera.near) > this.camera.near * 0.01 || Math.abs(far - this.camera.far) > this.camera.far * 0.01) {
+          this.camera.near = near;
+          this.camera.far = far;
+          this.camera.updateProjectionMatrix();
         }
       }
 
@@ -1016,13 +1161,16 @@
         ctx.textBaseline = 'alphabetic';
         for (const t of this.lite.texts) {
           const fs = t.h * pxPerUnit * (this.textScale || 1);
-          if (fs < 4 || fs > 600) continue;
+          // 너무 작아 읽을 수 없는 것(4px 미만)만 건너뛴다. 큰 글자도 그린다(예전에는 600px 초과를 숨겨 확대하면 글자가 사라졌다).
+          if (fs < 4 || fs > 6000) continue;
           const info = this.layers.get(t.layer);
           if (info && !info.visible) continue;
           ctx.globalAlpha = info && info.opacity !== undefined ? info.opacity : 1;   // 도면층 투명도
           v.set(t.x, t.y, 0).project(this.camera);
           const sx = (v.x + 1) / 2 * w, sy = (1 - v.y) / 2 * h;
-          if (sx < -200 || sx > w + 200 || sy < -200 || sy > h + 200) continue;
+          // 기준점이 화면 밖이어도 몸통(글자 크기 × 글자 수)이 화면에 걸치면 그린다
+          const mg = Math.max(200, fs * Math.min((t.s ? t.s.length : 1), 60) * 0.7);
+          if (sx < -mg || sx > w + 200 || sy < -mg || sy > h + mg) continue;
           if (t._l === undefined) t._l = this.cleanCadLines(t.s);
           if (t._l.length === 0) continue;
           ctx.font = `${fs.toFixed(1)}px ${this.textFont || '"Malgun Gothic", "맑은 고딕"'}, -apple-system, sans-serif`;
@@ -1248,16 +1396,57 @@
       }
 
       /* 큰 도면용: 줄바꿈(\P)을 살리고, 서식 태그를 지우고, \U+C218 같은 유니코드·%%d 같은 기호를 글자로 바꿈 */
+      /* CAD 글자의 서식 코드를 지우고 줄 목록으로 돌려준다.
+         한 칸씩 읽는 해석기(2026-11-21): 중첩 중괄호·\H2.5; \W0.8; \pxqc; \S1/2; %%u %%176 등을 처리한다(tools/test_text_clean.js). */
       cleanCadLines(raw) {
         if (!raw) return [];
-        let str = String(raw);
-        str = str.replace(/\\U\+([0-9A-Fa-f]{4})/g, (m, h) => String.fromCharCode(parseInt(h, 16)));
-        str = str.replace(/%%[dD]/g, '°').replace(/%%[pP]/g, '±').replace(/%%[cC]/g, 'Ø');
-        str = str.replace(/\\P/gi, '\n').replace(/\t/g, ' ');
-        str = str.replace(/\{[^{}]*;([^{}]*)\}/g, '$1').replace(/\{[^{}]*\}/g, '');
-        str = str.replace(/\\[A-Za-z0-9~^_]+;?/g, '');
-        str = str.replace(/[\\{}]/g, '');
-        return str.split('\n').map(x => x.trim()).filter(x => x.length > 0);
+        const s = String(raw).replace(/\t/g, ' ');
+        const n = s.length;
+        let out = '';
+        for (let i = 0; i < n; i++) {
+          const c = s[i];
+          if (c === '%' && s[i + 1] === '%') {
+            const d = s[i + 2];
+            if (d === undefined) break;
+            if (d === 'c' || d === 'C') { out += 'Ø'; i += 2; continue; }
+            if (d === 'd' || d === 'D') { out += '°'; i += 2; continue; }
+            if (d === 'p' || d === 'P') { out += '±'; i += 2; continue; }
+            if ('uUoOkK'.includes(d)) { i += 2; continue; }            // 밑줄·윗줄·취소선 켜고 끄기
+            if (d === '%') { out += '%'; i += 2; continue; }
+            const m = /^\d{3}/.exec(s.slice(i + 2, i + 5));
+            if (m) { out += String.fromCharCode(parseInt(m[0], 10)); i += 4; continue; }
+            out += c; continue;
+          }
+          if (c === '{' || c === '}') continue;                         // 묶음 표시는 지운다(안의 글자는 남김)
+          if (c !== '\\') { out += c; continue; }
+          const d = s[i + 1];
+          if (d === undefined) break;
+          if (d === 'P') { out += '\n'; i++; continue; }
+          if (d === '~') { out += ' '; i++; continue; }
+          if (d === '\\' || d === '{' || d === '}') { out += d; i++; continue; }
+          if (d === 'U' && s[i + 2] === '+') {
+            const m = /^[0-9A-Fa-f]{4}/.exec(s.slice(i + 3, i + 7));
+            if (m) { out += String.fromCharCode(parseInt(m[0], 16)); i += 6; continue; }
+          }
+          if (d === 'M' && s[i + 2] === '+') { const m = /^[0-9A-Fa-f]{5}/.exec(s.slice(i + 3, i + 8)); if (m) { i += 7; continue; } }
+          if (d === 'S') {                                              // 쌓은 글자: a/b a#b a^b
+            const semi = s.indexOf(';', i + 2);
+            if (semi > 0) {
+              const body = s.slice(i + 2, semi), k = body.search(/[\/#^]/);
+              out += k < 0 ? body : (body[k] === '^' ? body.slice(0, k) + body.slice(k + 1) : body.slice(0, k) + '/' + body.slice(k + 1));
+              i = semi; continue;
+            }
+          }
+          if ('LlOoKk'.includes(d)) { i++; continue; }                  // 밑줄·윗줄·취소선 표시
+          if (/[A-Za-z]/.test(d)) {                                     // \f \H \W \T \Q \C \A \p ... : 세미콜론까지가 값
+            const semi = s.indexOf(';', i + 2);
+            const stop = s.slice(i + 2, semi < 0 ? i + 2 : semi).search(/[\\{}]/);
+            i = (semi > 0 && stop < 0 && semi - i <= 60) ? semi : i + 1;
+            continue;
+          }
+          // 알 수 없는 이스케이프: 역슬래시만 지운다
+        }
+        return out.split('\n').map(x => x.trim()).filter(x => x.length > 0);
       }
 
       /* 2D 텍스트 스프라이트 생성 (정밀 비율 및 폰트 렌더링) */

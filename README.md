@@ -103,3 +103,8 @@ python C:\CnvWorkSpace\작업\cad-viewer\tools\inspect_cad.py <도면_또는_모
 python C:\CnvWorkSpace\작업\cad-viewer\tools\test_cad.py
 ```
 - 로컬 웹 서버 기동 -> Edge 헤드리스(CDP) 접속 -> 2D DXF 자동 로드 -> 레이어 On/Off -> Front 뷰 전환 -> 3D STL 로드 -> 모바일 에뮬레이션(390×844) 리사이즈 및 줌 검증 -> 스크린샷 캡처 완료 후 프로세스 자동 정리.
+
+
+## 큰 도면: Rust 직접 변환 (2026-11-22)
+`bin/dwg2lite.exe`(소스 `../DWG직접읽기/`, acadrust 라이브러리, 빌드는 `cargo build --release`)가 있으면 서버가 DWG 를 DXF 없이 바로 `.cadlite` 로 만든다(없거나 실패하면 LibreDWG 경로).
+블록을 한 번만 저장하는 v2 형식이라 32MB 도면이 823MB → 약 69MB 이고, 한글이 깨지지 않는다. 시험·한계·함정은 스킬 `cad-viewer` 와 `진행기록.md` 참고.

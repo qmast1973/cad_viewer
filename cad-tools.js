@@ -148,6 +148,25 @@
       for (const L of app.lite.lines) {
         if (!L.obj.parent || !L.obj.parent.visible) continue;
         const a = L.obj.geometry.attributes.position.array;
+        if (L.inst) {                                   // v2 인스턴스: 블록 좌표를 삽입 변환으로 옮겨서 비교(범위가 가까운 삽입만)
+          const { A, B, n, bb } = L.inst;
+          for (let k = 0; k < n; k++) {
+            const ma = A[k * 3], mc = A[k * 3 + 1], me = A[k * 3 + 2], mb = B[k * 3], md = B[k * 3 + 1], mf = B[k * 3 + 2];
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            for (let c = 0; c < 4; c++) {
+              const px = c & 1 ? bb[2] : bb[0], py = c & 2 ? bb[3] : bb[1];
+              const tx = ma * px + mc * py + me, ty = mb * px + md * py + mf;
+              if (tx < x0) x0 = tx; if (tx > x1) x1 = tx; if (ty < y0) y0 = ty; if (ty > y1) y1 = ty;
+            }
+            if (wx < x0 - rw || wx > x1 + rw || wy < y0 - rw || wy > y1 + rw) continue;
+            for (let i = 0; i < a.length; i += 2) {
+              const tx = ma * a[i] + mc * a[i + 1] + me, ty = mb * a[i] + md * a[i + 1] + mf;
+              const dx = tx - wx, dy = ty - wy, d = dx * dx + dy * dy;
+              if (d < bd) { bd = d; best = [tx, ty]; }
+            }
+          }
+          continue;
+        }
         for (let i = 0; i < a.length; i += 2) {
           const dx = a[i] - wx, dy = a[i + 1] - wy, d = dx * dx + dy * dy;
           if (d < bd) { bd = d; best = [a[i], a[i + 1]]; }
@@ -155,7 +174,7 @@
       }
       return best;
     }
-    const totalVerts = () => (app.lite ? app.lite.lines.reduce((n, l) => n + l.obj.geometry.attributes.position.count, 0) : 0);
+    const totalVerts = () => (app.lite ? app.lite.lines.reduce((n, l) => n + l.obj.geometry.attributes.position.count * (l.inst ? l.inst.n : 1), 0) : 0);
 
     function pickPoint(px, py, forceSnap) {
       const [wx, wy] = s2w(px, py);

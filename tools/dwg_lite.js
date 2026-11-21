@@ -105,19 +105,16 @@ function arcPoints(cx, cy, r, a0, a1) {
   for (let i = 0; i <= n; i++) { const t = a0 + span * i / n; pts.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]); }
   return pts;
 }
-function bulgeArc(p1, p2, b) {       // 두 점 사이 bulge 호의 중간 점들 (양 끝 제외)
+function bulgeArc(p1, p2, b) {       // 두 점 사이 bulge 호의 중간 점들 (양 끝 제외). 양의 bulge = 시계 반대 방향
+  // 중심 = 현의 중점 + 왼쪽 법선 * (현/2)*(1-b²)/(2b)  (2026-11-21 수식 검증으로 고침: 예전 식은 중심이 틀려 작은 bulge 에서 점이 아주 멀리 찍혔음)
   const dx = p2[0] - p1[0], dy = p2[1] - p1[1], chord = Math.hypot(dx, dy);
-  if (chord < 1e-9) return [];
-  const theta = 4 * Math.atan(b), rad = chord / (2 * Math.sin(theta / 2));
-  const alpha = Math.atan2(dy, dx), gamma = (Math.PI - theta) / 2;
-  const beta = alpha + (b > 0 ? (Math.PI / 2 - gamma) : -(Math.PI / 2 - gamma));
-  const cx = p1[0] + Math.abs(rad) * Math.cos(beta), cy = p1[1] + Math.abs(rad) * Math.sin(beta);
-  const a0 = Math.atan2(p1[1] - cy, p1[0] - cx), a1 = Math.atan2(p2[1] - cy, p2[0] - cx);
-  let span = a1 - a0;
-  if (b > 0 && span < 0) span += 2 * Math.PI; else if (b < 0 && span > 0) span -= 2 * Math.PI;
-  const n = Math.max(2, Math.min(32, Math.ceil(Math.abs(span) / (Math.PI / 16))));
+  if (chord < 1e-12 || Math.abs(b) < 1e-9) return [];
+  const theta = 4 * Math.atan(b), d = (chord / 2) * (1 - b * b) / (2 * b);
+  const cx = (p1[0] + p2[0]) / 2 + (-dy / chord) * d, cy = (p1[1] + p2[1]) / 2 + (dx / chord) * d;
+  const rad = (chord / 2) / Math.abs(Math.sin(theta / 2)), a0 = Math.atan2(p1[1] - cy, p1[0] - cx);
+  const n = Math.max(2, Math.min(32, Math.ceil(Math.abs(theta) / (Math.PI / 16))));
   const out = [];
-  for (let i = 1; i < n; i++) { const t = a0 + span * i / n; out.push([cx + Math.abs(rad) * Math.cos(t), cy + Math.abs(rad) * Math.sin(t)]); }
+  for (let i = 1; i < n; i++) { const t = a0 + theta * i / n; out.push([cx + rad * Math.cos(t), cy + rad * Math.sin(t)]); }
   return out;
 }
 
@@ -435,8 +432,45 @@ function finalize(res, srcName) {
   return { buffer: Buffer.concat([lenBuf, json, body]), head };
 }
 
+// ── 6) DWG 직접 읽기(Rust acadrust): DXF 를 거치지 않는다 (2026-11-21) ────────────
+// bin/dwg2lite.exe 가 있으면 DWG 를 바로 cadlite 로 만든다(27MB 도면 약 3초, LibreDWG 방식 약 29초).
+// 한글 레이어·글자가 깨지지 않는 장점이 있다. 실패하면 아래의 LibreDWG 방식으로 다시 시도한다.
+const DIRECT = path.join(__dirname, '..', 'bin', 'dwg2lite.exe');
+function runDirect(inPath, litePath, timeoutMs = 600000) {
+  return new Promise((resolve, reject) => {
+    // DWG2LITE_FLAT=1 이면 예전 v1(블록을 전부 펼침) 형식으로 만든다(비교·시험용)
+    const p = spawn(DIRECT, (process.env.DWG2LITE_FLAT ? ['--flat'] : []).concat([inPath, litePath]), { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', (d) => { if (err.length < 4000) err += d.toString(); });
+    const timer = setTimeout(() => { p.kill(); reject(new Error('DWG 직접 변환 시간 초과')); }, timeoutMs);
+    p.on('error', (e) => { clearTimeout(timer); reject(e); });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0 && fs.existsSync(litePath) && fs.statSync(litePath).size > 8) return resolve();
+      reject(new Error(`dwg2lite 실패(코드 ${code}): ${err.trim().slice(-300)}`));
+    });
+  });
+}
+function readLiteStats(litePath) {
+  const fd = fs.openSync(litePath, 'r');
+  try {
+    const l = Buffer.alloc(4); fs.readSync(fd, l, 0, 4, 0);
+    const b = Buffer.alloc(l.readUInt32LE(0)); fs.readSync(fd, b, 0, b.length, 4);
+    return JSON.parse(b.toString('utf8')).stats;
+  } finally { fs.closeSync(fd); }
+}
+
 async function convert(inPath, litePath, onProgress, opts = {}) {
   // opts.dxf = true 이면 입력이 이미 DXF 이므로 변환 단계를 건너뛴다 (입력 파일은 지우지 않음)
+  if (!opts.dxf && !opts.noDirect && fs.existsSync(DIRECT)) {
+    try {
+      await runDirect(inPath, litePath);
+      return readLiteStats(litePath);
+    } catch (e) {
+      console.error('[직접 변환 실패 → LibreDWG 방식으로 다시 시도]', e.message);
+      try { fs.unlinkSync(litePath); } catch (e2) {}
+    }
+  }
   const dxfPath = opts.dxf ? inPath : litePath + '.tmp.dxf';
   try {
     if (!opts.dxf) await dwgToDxf(inPath, dxfPath);
