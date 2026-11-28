@@ -53,7 +53,7 @@
     app.textFixed = store.get('fixed', false);                    // 확대해도 글자 크기 고정(선택, 기본은 캐드처럼 도면과 같이 커지고 작아짐)
 
     const T = {
-      tool: null,                 // null | 'dist' | 'area' | 'coord' | 'zoomwin'
+      tool: null,                 // null | 'dist' | 'path' | 'area' | 'coord' | 'zoomwin'
       pts: [], hover: null, records: [],
       find: { q: '', opts: { cs: false, word: false, wild: false, skipHidden: true }, res: [], cur: -1 },
       views: [], dirty: true, sig: ''
@@ -280,6 +280,13 @@
     }
     function absOf(p) { const o = origin(); return [p[0] + o[0], p[1] + o[1]]; }
 
+    function finishPath() {
+      if (T.pts.length >= 2) {
+        const abs = T.pts.map(absOf), o = origin();
+        addRecord({ type: '길이', value: polyLen(abs, false), pts: abs.map((a) => [a[0] - o[0], a[1] - o[1]]) });
+      } else toast('점이 2개 이상 필요합니다');
+      T.pts = []; T.hover = null; T.dirty = true;
+    }
     function finishArea() {
       if (T.pts.length >= 3) measureArea(T.pts.map(absOf));
       else toast('점이 3개 이상 필요합니다');
@@ -293,7 +300,7 @@
       if (T.tool === 'dist') {
         T.pts.push(p);
         if (T.pts.length === 2) { measureDist(absOf(T.pts[0]), absOf(T.pts[1])); T.pts = []; T.hover = null; }
-      } else if (T.tool === 'area') T.pts.push(p);
+      } else if (T.tool === 'area' || T.tool === 'path') T.pts.push(p);
       else if (T.tool === 'coord') coordAt(absOf(p));
       T.dirty = true; renderPanel();
     }
@@ -412,11 +419,11 @@
     // ── 터치(폰) 측정: 손가락으로 끌어도 화면이 같이 움직이지 않게, 한 손가락은 '십자선'만 옮기고(손가락 위쪽 70px) 끝점·중점·교차에 붙는 것을
     //    보여 준 뒤 [점 찍기] 를 눌러 확정한다. 화면 이동·확대는 두 손가락. 마우스는 예전처럼 누르면 바로 찍힘. ──
     let snapMark = null, lastSnapT = 0;
-    const TOUCH_TOOLS = ['dist', 'area', 'coord', 'edit'];
+    const TOUCH_TOOLS = ['dist', 'path', 'area', 'coord', 'edit'];
     const TP = { coarse: !!(window.matchMedia && matchMedia('(pointer: coarse)').matches), showPanel: false, cross: null, snap: null, fingers: new Set(), down: false, last: 0, aim: false, moved: false, start: null, grab: null };
     const TP_OFFSET = 0;                                                  // 손가락이 짚은 곳이 곧 커서(돋보기로 가려진 부분을 본다)
     const tpBar = document.createElement('div'); tpBar.id = 'tp-bar';
-    tpBar.innerHTML = '<button class="sub" id="tpPanelBtn">≡ 설정</button><button class="sub" id="tpUndo">↶ 되돌리기</button><button id="tpPut">✓ 여기에 찍기</button><button class="sub" id="tpCancel">✕ 취소</button>';
+    tpBar.innerHTML = '<button class="sub" id="tpPanelBtn">≡ 설정</button><button class="sub" id="tpUndo">↶ 되돌리기</button><button id="tpDone">■ 측정 완료</button><button id="tpPut">✓ 여기에 찍기</button><button class="sub" id="tpCancel">✕ 취소</button>';
     view.appendChild(tpBar);
     const tpInfo = document.createElement('div'); tpInfo.id = 'tp-info'; view.appendChild(tpInfo);
     // 돋보기: 손가락이 십자선을 가려도 보이게, 십자선 둘레를 3배로 확대해 반대편 위쪽 모서리에 보여 준다.
@@ -445,7 +452,7 @@
     }
     const touchTool = () => TOUCH_TOOLS.includes(T.tool) && isLite();
     function updateTouchMode() {               // 도구가 켜져 있으면 한 손가락 이동을 끈다(두 손가락 이동·확대는 그대로)
-      const active = ['dist', 'area', 'coord', 'edit', 'sel'].includes(T.tool) && isLite();
+      const active = ['dist', 'path', 'area', 'coord', 'edit', 'sel'].includes(T.tool) && isLite();
       app.controls.touches.ONE = active ? -1 : (app.is2DMode ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE);
     }
     function tpInfoText() {
@@ -455,7 +462,12 @@
         if (last && last.type === '거리') return `거리 ${fmt(last.value)} (ΔX ${fmt(last.dx)}, ΔY ${fmt(last.dy)}, ${last.angle.toFixed(1)}°) · 점 위에 십자선을 올려 끌면 옮길 수 있음`;
         return '처음 점: 손가락을 끌어 십자선을 끝점·중점에 맞추고 손을 떼세요';
       }
-      if (T.tool === 'area') return T.pts.length ? `${T.pts.length}점 · 점마다 스냅에 맞춰 손을 떼세요 · 끝나면 ≡ 설정 → 면적 완료` : (last && last.type === '면적' ? `면적 ${fmt(last.value)} · 둘레 ${fmt(last.perimeter)}` : '첫 점: 십자선을 맞추고 손을 떼세요');
+      if (T.tool === 'path') {
+        if (T.pts.length) return `${T.pts.length}점 · 합계 ${fmt(polyLen(T.pts, false))} · 다음 점을 맞추고 손을 떼세요 · 끝나면 [측정 완료]`;
+        if (last && last.type === '길이') return `합계 ${fmt(last.value)} (${last.pts.length - 1}구간) · 새로 재려면 시작점을 찍으세요`;
+        return '시작점: 손가락을 끌어 끝점·중점에 맞추고 손을 떼세요';
+      }
+      if (T.tool === 'area') return T.pts.length ? `${T.pts.length}점 · 점마다 스냅에 맞춰 손을 떼세요 · 끝나면 [측정 완료]` : (last && last.type === '면적' ? `면적 ${fmt(last.value)} · 둘레 ${fmt(last.perimeter)}` : '첫 점: 십자선을 맞추고 손을 떼세요');
       if (T.tool === 'coord') return last && last.type === '좌표' ? `좌표 X ${fmt(last.x)}, Y ${fmt(last.y)}` : '좌표를 볼 곳에 십자선을 맞추고 손을 떼세요';
       if (T.tool === 'edit') return E.msg || '';
       return '';
@@ -467,8 +479,10 @@
       const idle = touchTool() && !TP.down;
       $('tpPut').style.display = aiming ? '' : 'none'; $('tpCancel').style.display = aiming ? '' : 'none';
       $('tpUndo').style.display = (idle && hasWork) ? '' : 'none';
+      const doneOk = (T.tool === 'path' && T.pts.length >= 2) || (T.tool === 'area' && T.pts.length >= 3);
+      $('tpDone').style.display = (idle && doneOk) ? '' : 'none';
       $('tpPanelBtn').style.display = (idle && TP.coarse && !aiming) ? '' : 'none';
-      tpBar.style.display = (aiming || (idle && (hasWork || TP.coarse))) ? 'flex' : 'none';
+      tpBar.style.display = (aiming || (idle && (hasWork || TP.coarse || doneOk))) ? 'flex' : 'none';
       // 터치로 쓰는 중이면 큰 측정 패널은 숨긴다(손가락 조준·화면을 가리고, 패널 위에서는 점을 못 찍으므로). [≡ 설정] 으로 잠깐 열 수 있다.
       const hidePanel = touchTool() && TP.coarse && !TP.showPanel;
       panel.style.display = hidePanel ? 'none' : '';
@@ -476,7 +490,7 @@
       const txt = (touchTool() && TP.coarse && !TP.showPanel) ? tpInfoText() : '';
       tpInfo.textContent = txt; tpInfo.style.display = txt ? 'block' : 'none';
     }
-    function tpClear() { TP.cross = null; TP.snap = null; snapMark = null; tpShow(); loupe.style.display = 'none'; T.dirty = true; }
+    function tpClear() { T.hover = null; TP.cross = null; TP.snap = null; snapMark = null; tpShow(); loupe.style.display = 'none'; T.dirty = true; }
     /* 이미 찍은 점(진행 중인 점 + 기록된 측정의 점)을 옮길 수 있게: 십자선이 점 위에 올라가 있으면 그 점을 '잡는다'. */
     function tpHandles() {
       const h = [];
@@ -493,6 +507,7 @@
       if (!r) return;
       if (r.type === '거리') { const [p, q] = r.pts; r.dx = q[0] - p[0]; r.dy = q[1] - p[1]; r.value = Math.hypot(r.dx, r.dy); r.angle = Math.atan2(r.dy, r.dx) * 180 / Math.PI; }
       else if (r.type === '면적') { r.value = polyArea(r.pts); r.perimeter = polyLen(r.pts, true); }
+      else if (r.type === '길이') { r.value = polyLen(r.pts, false); }
       else if (r.type === '좌표') { const o = origin(); r.x = r.pts[0][0] + o[0]; r.y = r.pts[0][1] + o[1]; }
     }
     function tpUndo() {
@@ -505,7 +520,7 @@
       TP.cross = { x, y };
       const q = pickPoint(x, y, false, 24);
       TP.snap = q.snapped ? { p: q.p, type: q.type } : null; TP.pt = q.p; snapMark = TP.snap;
-      if (T.tool === 'edit' && E.step === 'target') E.hover = q.p; else if (['dist', 'area'].includes(T.tool) && T.pts.length) T.hover = q.p;
+      if (T.tool === 'edit' && E.step === 'target') E.hover = q.p; else if (['dist', 'path', 'area'].includes(T.tool) && T.pts.length) T.hover = q.p;
       if (TP.grab) { TP.grab.p[0] = q.p[0]; TP.grab.p[1] = q.p[1]; tpRecompute(TP.grab.rec); }
       T.dirty = true; tpShow(); tpLoupe();
     }
@@ -547,6 +562,7 @@
     };
     canvas.addEventListener('pointerup', tpEnd); canvas.addEventListener('pointercancel', tpEnd);
     $('tpPut').addEventListener('click', tpPut); $('tpCancel').addEventListener('click', tpClear); $('tpUndo').addEventListener('click', tpUndo);
+    $('tpDone').addEventListener('click', () => { if (T.tool === 'path') finishPath(); else if (T.tool === 'area') finishArea(); renderPanel(); tpShow(); });
     $('tpPanelBtn').addEventListener('click', () => { TP.showPanel = !TP.showPanel; if (TP.showPanel) panel.classList.add('open'); tpShow(); renderPanel(); });
     let down = null, lastHover = 0, zw = null;
     canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, id: e.pointerId, t: e.button }; });
@@ -554,22 +570,22 @@
       if (!down || e.pointerId !== down.id) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); const btn = down.t; down = null;
       if (e.pointerType === 'touch' && TOUCH_TOOLS.includes(T.tool)) return;                    // 터치 측정은 십자선 + [점 찍기]
-      if (moved < 6 && btn === 0 && ['dist', 'area', 'coord', 'edit', 'sel'].includes(T.tool)) { const r = canvas.getBoundingClientRect(); onClick(e.clientX - r.left, e.clientY - r.top, e.shiftKey); }
+      if (moved < 6 && btn === 0 && ['dist', 'path', 'area', 'coord', 'edit', 'sel'].includes(T.tool)) { const r = canvas.getBoundingClientRect(); onClick(e.clientX - r.left, e.clientY - r.top, e.shiftKey); }
     });
     canvas.addEventListener('pointermove', (e) => {         // 스냅 표식(측정·면적·좌표·편집 도구가 켜져 있을 때)
       if (e.pointerType === 'touch') return;
-      if (!['dist', 'area', 'coord', 'edit'].includes(T.tool) || !isLite()) { if (snapMark) { snapMark = null; T.dirty = true; } return; }
+      if (!['dist', 'path', 'area', 'coord', 'edit'].includes(T.tool) || !isLite()) { if (snapMark) { snapMark = null; T.dirty = true; } return; }
       const nw = performance.now(); if (nw - lastSnapT < 70) return; lastSnapT = nw;
       const rr = canvas.getBoundingClientRect(); const r = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false);
       snapMark = r.snapped ? { p: r.p, type: r.type } : null; T.dirty = true;
     });
     canvas.addEventListener('pointermove', (e) => {
       if (T.tool === 'edit' && E.step === 'target' && isLite()) { const nw = performance.now(); if (nw - lastHover < 50) return; lastHover = nw; const rr = canvas.getBoundingClientRect(); E.hover = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false).p; T.dirty = true; return; }
-      if (!['dist', 'area'].includes(T.tool) || !T.pts.length || !isLite()) return;
+      if (!['dist', 'path', 'area'].includes(T.tool) || !T.pts.length || !isLite()) return;
       const now = performance.now(); if (now - lastHover < 70) return; lastHover = now;
       const r = canvas.getBoundingClientRect(); T.hover = pickPoint(e.clientX - r.left, e.clientY - r.top, false).p; T.dirty = true;
     });
-    canvas.addEventListener('dblclick', () => { if (T.tool === 'area' && T.pts.length > 3) { T.pts.pop(); finishArea(); renderPanel(); } });
+    canvas.addEventListener('dblclick', () => { if (T.tool === 'area' && T.pts.length > 3) { T.pts.pop(); finishArea(); renderPanel(); } else if (T.tool === 'path' && T.pts.length > 2) { T.pts.pop(); finishPath(); renderPanel(); } });
     view.addEventListener('pointerdown', (e) => {                       // 영역 확대: 끌어서 상자 지정 (돌려보기·이동보다 먼저 받음)
       if (T.tool !== 'zoomwin' || e.button !== 0) return;
       e.stopPropagation(); e.preventDefault();
@@ -586,6 +602,7 @@
       if (e.key === 'Escape') { if (T.tool === 'sel' && S.sel.length) { S.sel = []; T.dirty = true; renderPanel(); } else if (T.tool === 'edit' && (E.op || E.sel)) { editEnd(); } else { T.pts = []; T.hover = null; setTool(null); T.dirty = true; } }
       else if (e.key === 'Enter' && T.tool === 'edit' && (E.op || E.sel)) { editEnd(); }
       else if (e.key === 'Enter' && T.tool === 'area') { finishArea(); renderPanel(); }
+      else if (e.key === 'Enter' && T.tool === 'path') { finishPath(); renderPanel(); }
       else if (e.key === 'Backspace' && T.pts.length) { T.pts.pop(); T.dirty = true; renderPanel(); }
     });
 
@@ -617,7 +634,7 @@
         });
       }
       // 측정
-      const colors = { 거리: '#00e5ff', 면적: '#7CFC00', 좌표: '#ffb300' };
+      const colors = { 거리: '#00e5ff', 길이: '#ff6bd6', 면적: '#7CFC00', 좌표: '#ffb300' };
       const drawPts = (pts, color, closed, fill) => {
         if (!pts.length) return; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
         ctx.beginPath(); pts.forEach((p, i) => { const [x, y] = w2s(p[0], p[1]); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); if (closed) ctx.closePath();
@@ -625,13 +642,23 @@
         const hr = touchTool() ? 7 : 4;
         pts.forEach((p) => { const [x, y] = w2s(p[0], p[1]); ctx.beginPath(); ctx.arc(x, y, hr, 0, Math.PI * 2); ctx.fill(); });
       };
+      // 연속 길이: 각 점 번호 + 구간마다 길이 + 마지막 점 옆에 합계
+      const pathLabels = (pts, color, total, extra) => {
+        ctx.save(); ctx.font = 'bold 12px sans-serif'; ctx.fillStyle = color; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+        pts.forEach((p, i) => { const [x, y] = w2s(p[0], p[1]); ctx.fillText(String(i + 1), x + 9, y - 6); });
+        ctx.restore();
+        for (let i = 1; i < pts.length; i++) { const [x, y] = w2s((pts[i - 1][0] + pts[i][0]) / 2, (pts[i - 1][1] + pts[i][1]) / 2); label(ctx, x, y, fmt(dist2(pts[i - 1], pts[i]))); }
+        if (pts.length > 1) { const [x, y] = w2s(pts[pts.length - 1][0], pts[pts.length - 1][1]); label(ctx, x, y + 22, '합계 ' + fmt(total) + (extra || '')); }
+      };
       T.records.forEach((r) => {
+        if (r.type === '길이') { drawPts(r.pts, colors[r.type], false, false); pathLabels(r.pts, colors[r.type], r.value); return; }
         const c = colors[r.type]; drawPts(r.pts, c, r.type === '면적', r.type === '면적');
         const m = r.pts.reduce((a, p) => [a[0] + p[0] / r.pts.length, a[1] + p[1] / r.pts.length], [0, 0]); const [x, y] = w2s(m[0], m[1]);
         label(ctx, x, y, r.type === '거리' ? fmt(r.value) : r.type === '면적' ? fmt(r.value) : `${fmt(r.x)}, ${fmt(r.y)}`);
       });
       if (T.pts.length) {
-        const pts = T.hover ? T.pts.concat([T.hover]) : T.pts; drawPts(pts, '#ffffff', false, false);
+        const lastP = T.pts[T.pts.length - 1], pts = (T.hover && dist2(T.hover, lastP) > 1e-9) ? T.pts.concat([T.hover]) : T.pts; drawPts(pts, '#ffffff', false, false);
+        if (T.tool === 'path') pathLabels(pts, '#ffffff', polyLen(pts, false));
         if (T.hover && T.tool === 'dist') { const a = T.pts[T.pts.length - 1]; const [x, y] = w2s((a[0] + T.hover[0]) / 2, (a[1] + T.hover[1]) / 2); label(ctx, x, y, fmt(dist2(a, T.hover))); }
         if (T.hover && T.tool === 'area' && T.pts.length >= 2) { const [x, y] = w2s(T.hover[0], T.hover[1]); label(ctx, x, y - 6, fmt(polyArea(pts))); }
       }
@@ -668,7 +695,7 @@
           if (S.sel.length < 20) label(ctx, ax + w / 2, ay - 4, o.n);
         }
       }
-      if (snapMark && ['dist', 'area', 'coord', 'edit'].includes(T.tool)) {                  // 스냅 표식: 끝점 □ · 중점 △ · 교차 ×
+      if (snapMark && ['dist', 'path', 'area', 'coord', 'edit'].includes(T.tool)) {                  // 스냅 표식: 끝점 □ · 중점 △ · 교차 ×
         const [sx, sy] = w2s(snapMark.p[0], snapMark.p[1]); const col = { end: '#2bff7a', mid: '#2bd8ff', int: '#ff4df0' }[snapMark.type];
         ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
         if (snapMark.type === 'end') ctx.rect(sx - 6, sy - 6, 12, 12);
@@ -732,7 +759,7 @@
 
     // ── 패널 UI ──
     const bar = document.createElement('div'); bar.className = 'floating-tools';
-    const defs = [['find', '찾기', '글자 찾기'], ['dist', '거리', '두 점 거리 (끝점 자동 맞춤)'], ['area', '면적', '여러 점으로 면적·둘레 (Enter/더블클릭 완료)'], ['coord', '좌표', '점 좌표 보기'],
+    const defs = [['find', '찾기', '글자 찾기'], ['dist', '거리', '두 점 거리 (끝점 자동 맞춤)'], ['path', '연속', '여러 점을 차례로 찍어 구간별 길이와 합계 (Enter/더블클릭/완료 단추로 끝)'], ['area', '면적', '여러 점으로 면적·둘레 (Enter/더블클릭 완료)'], ['coord', '좌표', '점 좌표 보기'],
       ['sel', '선택', '부품(블록) 선택 — 누르면 고르고 정보 표시, 같은 자리를 다시 누르면 겹친 다음 부품, Shift 로 여러 개'], ['edit', '편집', '부품 이동(M)·복사(CO) — 원본은 그대로, 새 DXF 로 저장'], ['zoomwin', '영역', '끌어서 영역 확대'], ['prev', '이전', '이전 보기'], ['font', '글꼴', '글자 표시·글꼴 설정'], ['png', 'PNG', '지금 화면을 PNG로 저장']];
     const btns = {};
     defs.forEach(([k, txt, tip]) => { const b = document.createElement('button'); b.className = 'btn'; b.textContent = txt; b.title = tip; b.dataset.k = k; bar.appendChild(b); btns[k] = b; });
@@ -745,7 +772,7 @@
       T.tool = (T.tool === t) ? null : t; T.pts = []; T.hover = null; T.dirty = true; TP.showPanel = false; tpClear(); updateTouchMode();
       Object.keys(btns).forEach((k) => btns[k].classList.toggle('active', k === T.tool || (k === panelKind && panel.classList.contains('open'))));
       canvas.style.cursor = T.tool ? 'crosshair' : '';
-      if (['dist', 'area', 'coord'].includes(T.tool)) { panelKind = 'measure'; panel.classList.add('open'); }
+      if (['dist', 'path', 'area', 'coord'].includes(T.tool)) { panelKind = 'measure'; panel.classList.add('open'); }
       else if (T.tool === 'sel') { panelKind = 'sel'; panel.classList.add('open'); }
       else if (T.tool === 'edit') { panelKind = 'edit'; panel.classList.add('open'); if (!E.ready && !E.busy && localServer() && isLite()) setTimeout(editOpen, 0); }
       else if (T.tool === null && (panelKind === 'measure' || panelKind === 'edit' || panelKind === 'sel')) panel.classList.remove('open');
@@ -788,15 +815,15 @@
         $('fPrev').onclick = () => findGo(-1); $('fNext').onclick = () => findGo(1);
         $('fList').onclick = (e) => { const it = e.target.closest('.item'); if (!it) return; f.cur = +it.dataset.k; zoomToText(app.lite.texts[f.res[f.cur]]); renderPanel(); };
       } else if (panelKind === 'measure') {
-        const hint = { dist: '두 점을 차례로 누르세요 (끝점에 자동으로 붙습니다)', area: '점을 차례로 누르고 Enter 또는 더블클릭으로 끝내세요 · Backspace 한 점 취소', coord: '좌표를 볼 점을 누르세요' }[T.tool] || '아래 측정 도구를 고르세요';
+        const hint = { dist: '두 점을 차례로 누르세요 (끝점에 자동으로 붙습니다)', path: '점을 차례로 누르세요(구간 길이·합계가 표시됩니다) · Enter·더블클릭·[측정 완료]로 끝내세요 · Backspace 한 점 취소', area: '점을 차례로 누르고 Enter 또는 더블클릭으로 끝내세요 · Backspace 한 점 취소', coord: '좌표를 볼 점을 누르세요' }[T.tool] || '아래 측정 도구를 고르세요';
         panel.innerHTML = `<h4>측정 <button class="btn btn-icon-only" id="pClose" style="border:none;height:22px;width:22px">✕</button></h4>
-          <div class="muted">${hint}${T.tool === 'area' ? ` · 현재 ${T.pts.length}점` : ''}</div>
+          <div class="muted">${hint}${T.tool === 'area' ? ` · 현재 ${T.pts.length}점` : ''}${T.tool === 'path' ? ` · 현재 ${T.pts.length}점 · 합계 ${fmt(polyLen(T.pts, false))}` : ''}</div>
           <div class="row" style="gap:10px;flex-wrap:wrap"><label><input type="checkbox" id="snOn" ${SNAP.on ? 'checked' : ''}>스냅</label><label><input type="checkbox" id="snEnd" ${SNAP.end ? 'checked' : ''}>끝점 □</label><label><input type="checkbox" id="snMid" ${SNAP.mid ? 'checked' : ''}>중점 △</label><label><input type="checkbox" id="snInt" ${SNAP.int ? 'checked' : ''}>교차 ×</label></div>
-          <div class="row">${T.tool === 'area' ? '<button class="btn" id="mDone">면적 완료</button>' : ''}<button class="btn" id="mClear">기록 지우기</button><button class="btn" id="mCsv">CSV 저장</button></div>
-          <div class="list">${T.records.map((r, i) => `<div class="item"><b>${i + 1}</b><span>${r.type === '거리' ? `거리 ${fmt(r.value)} (ΔX ${fmt(r.dx)}, ΔY ${fmt(r.dy)}, ${r.angle.toFixed(1)}°)` : r.type === '면적' ? `면적 ${fmt(r.value)} · 둘레 ${fmt(r.perimeter)}` : `X ${fmt(r.x)}, Y ${fmt(r.y)}`}</span></div>`).join('') || '<span class="muted">기록이 없습니다</span>'}</div>
+          <div class="row">${T.tool === 'area' ? '<button class="btn" id="mDone">면적 완료</button>' : ''}${T.tool === 'path' ? '<button class="btn" id="mDone">측정 완료</button>' : ''}<button class="btn" id="mClear">기록 지우기</button><button class="btn" id="mCsv">CSV 저장</button></div>
+          <div class="list">${T.records.map((r, i) => `<div class="item"><b>${i + 1}</b><span>${r.type === '길이' ? `길이 합계 ${fmt(r.value)} (${r.pts.length - 1}구간: ${r.pts.slice(1).map((p, k) => fmt(dist2(r.pts[k], p))).join(' + ')})` : r.type === '거리' ? `거리 ${fmt(r.value)} (ΔX ${fmt(r.dx)}, ΔY ${fmt(r.dy)}, ${r.angle.toFixed(1)}°)` : r.type === '면적' ? `면적 ${fmt(r.value)} · 둘레 ${fmt(r.perimeter)}` : `X ${fmt(r.x)}, Y ${fmt(r.y)}`}</span></div>`).join('') || '<span class="muted">기록이 없습니다</span>'}</div>
           <div class="muted">값은 도면 단위(mm 도면이면 mm, 면적은 mm²)입니다.</div>`;
         [['snOn', 'on', 'snapOn'], ['snEnd', 'end', 'snapEnd'], ['snMid', 'mid', 'snapMid'], ['snInt', 'int', 'snapInt']].forEach(([id, k, sk]) => { const el = $(id); if (el) el.onchange = (e) => { SNAP[k] = e.target.checked; store.set(sk, SNAP[k]); }; });
-        if ($('mDone')) $('mDone').onclick = () => { finishArea(); renderPanel(); };
+        if ($('mDone')) $('mDone').onclick = () => { if (T.tool === 'path') finishPath(); else finishArea(); renderPanel(); };
         $('mClear').onclick = () => { T.records = []; T.pts = []; T.hover = null; T.dirty = true; renderPanel(); };
         $('mCsv').onclick = () => downloadCsv();
       } else if (panelKind === 'sel') {
@@ -885,6 +912,7 @@
       SAVE: () => editSave(), QSAVE: () => editSave(), SAVEAS: () => editSave('dxf'), DXFOUT: () => editSave('dxf'),
       Z: () => { cmdMode = 'zoom'; showCmd('', '줌 [E 전체/W 영역/P 이전/A 전체/배율]:'); }, ZOOM: () => CMD.Z(),
       ZE: () => fitAll(), ZA: () => fitAll(), ZW: () => toolOn('zoomwin'), ZP: () => prevView(),
+      PL: () => toolOn('path'), LEN: () => toolOn('path'), DL: () => toolOn('path'),
       DI: () => toolOn('dist'), DIST: () => toolOn('dist'), DISTANCE: () => toolOn('dist'),
       AA: () => toolOn('area'), AREA: () => toolOn('area'),
       ID: () => toolOn('coord'),

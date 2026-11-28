@@ -167,6 +167,23 @@ async def main():
             check("[여기에 찍기] 로 스냅 없이도 점을 찍음", (await state())['pts'] == 1)
             await tap(await center('tpUndo'))
 
+            # ⑥-2 연속 길이: 점 3개 → [측정 완료] → 구간 합계
+            await ev("window.cadTools.setTool('path')")
+            for w in ((0, 0), (100, 100), (100, 40)):
+                await aim_at(w)
+                await touch('touchEnd', [])
+                await asyncio.sleep(0.4)
+            st = await state()
+            check("연속 길이: 점 3개가 쌓이고 기록은 아직 없음", st['pts'] == 3 and st['records'] == 0, st)
+            check("[측정 완료] 단추가 보임", (await ev("getComputedStyle(document.getElementById('tpDone')).display")) != 'none')
+            shot2 = await send('Page.captureScreenshot', {'format': 'png'})
+            Path(os.environ.get('TEMP', '.'), 'touch_path.png').write_bytes(base64.b64decode(shot2['data']))
+            await tap(await center('tpDone'))
+            recs = await ev("window.cadTools.records()")
+            check("연속 길이 합계 = 141.42 + 60 = 201.42", len(recs) == 1 and recs[0]['type'] == '길이' and abs(recs[0]['value'] - (math.hypot(100, 100) + 60)) < 1e-3, recs)
+            await tap(await center('tpUndo'))
+            await ev("window.cadTools.setTool('dist')")
+
             # ⑦ 돋보기 + 화면 확인
             await aim_at((0, 0))
             lp = await ev("""(()=>{const c=document.getElementById('tp-loupe');const g=c.getContext('2d');const d=g.getImageData(0,0,c.width,c.height).data;let bright=0;for(let i=0;i<d.length;i+=4){if(d[i]+d[i+1]+d[i+2]>330)bright++}return {bright, display:getComputedStyle(c).display}})()""")
