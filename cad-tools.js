@@ -414,7 +414,7 @@
     let snapMark = null, lastSnapT = 0;
     const TOUCH_TOOLS = ['dist', 'area', 'coord', 'edit'];
     const TP = { coarse: !!(window.matchMedia && matchMedia('(pointer: coarse)').matches), showPanel: false, cross: null, snap: null, fingers: new Set(), down: false, last: 0, aim: false, moved: false, start: null, grab: null };
-    const TP_OFFSET = 70;
+    const TP_OFFSET = 0;                                                  // 손가락이 짚은 곳이 곧 커서(돋보기로 가려진 부분을 본다)
     const tpBar = document.createElement('div'); tpBar.id = 'tp-bar';
     tpBar.innerHTML = '<button class="sub" id="tpPanelBtn">≡ 설정</button><button class="sub" id="tpUndo">↶ 되돌리기</button><button id="tpPut">✓ 여기에 찍기</button><button class="sub" id="tpCancel">✕ 취소</button>';
     view.appendChild(tpBar);
@@ -440,8 +440,7 @@
         if (cv.width) { const cr = cv.width / Math.max(1, size().W); g.drawImage(cv, sx * cr, sy * cr, src * cr, src * cr, 0, 0, px, px); }
       } catch (e) { /* 복사 실패(그래픽 환경)는 건너뜀 */ }
       const c = px / 2, col = TP.snap ? '#2bff7a' : '#ffffff';
-      g.strokeStyle = col; g.lineWidth = 2 * dpr; g.beginPath();
-      g.moveTo(c - 26 * dpr, c); g.lineTo(c - 7 * dpr, c); g.moveTo(c + 7 * dpr, c); g.lineTo(c + 26 * dpr, c); g.moveTo(c, c - 26 * dpr); g.lineTo(c, c - 7 * dpr); g.moveTo(c, c + 7 * dpr); g.lineTo(c, c + 26 * dpr); g.stroke();
+      g.strokeStyle = col; g.lineWidth = 2 * dpr;
       if (TP.snap) { g.strokeRect(c - 8 * dpr, c - 8 * dpr, 16 * dpr, 16 * dpr); }
     }
     const touchTool = () => TOUCH_TOOLS.includes(T.tool) && isLite();
@@ -668,11 +667,6 @@
           ctx.fillRect(ax, ay, w, h); ctx.strokeRect(ax, ay, w, h);
           if (S.sel.length < 20) label(ctx, ax + w / 2, ay - 4, o.n);
         }
-      }
-      if (TP.cross && touchTool()) {                                                          // 터치 십자선(손가락 위쪽)
-        const { x, y } = TP.cross; ctx.strokeStyle = TP.snap ? '#2bff7a' : '#ffffff'; ctx.lineWidth = 1.5; ctx.beginPath();
-        ctx.moveTo(x - 26, y); ctx.lineTo(x - 7, y); ctx.moveTo(x + 7, y); ctx.lineTo(x + 26, y); ctx.moveTo(x, y - 26); ctx.lineTo(x, y - 7); ctx.moveTo(x, y + 7); ctx.lineTo(x, y + 26); ctx.stroke();
-        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
       }
       if (snapMark && ['dist', 'area', 'coord', 'edit'].includes(T.tool)) {                  // 스냅 표식: 끝점 □ · 중점 △ · 교차 ×
         const [sx, sy] = w2s(snapMark.p[0], snapMark.p[1]); const col = { end: '#2bff7a', mid: '#2bd8ff', int: '#ff4df0' }[snapMark.type];
@@ -955,7 +949,7 @@
         ops: () => E.ops.map((o) => ({ op: o.op, handle: o.handle, name: o.name, dx: o.dx, dy: o.dy })), state: () => ({ ready: E.ready, busy: E.busy, step: E.step, op: E.op, selected: E.sel && E.sel.name, ops: E.ops.length, saved: E.saved, msg: E.msg }), clearSel: () => { E.sel = null; T.dirty = true; } },
       command: (t) => runCmd(t),
       view: { toScreen: (x, y) => { const o = origin(); const [sx, sy] = w2s(x - o[0], y - o[1]); const r = canvas.getBoundingClientRect(); return [sx + r.left, sy + r.top]; } },
-      touch: { state: () => ({ cross: TP.cross, snap: TP.snap && TP.snap.type, bar: tpBar.style.display, one: app.controls.touches.ONE, pts: T.pts.length, records: T.records.length, grab: !!TP.grab, loupe: loupe.style.display, loupeSide: loupe.style.left === '12px' ? 'left' : 'right' }), put: tpPut },
+      touch: { state: () => ({ cross: TP.cross, snap: TP.snap && TP.snap.type, bar: tpBar.style.display, one: app.controls.touches.ONE, hover: T.hover, pt: TP.pt, pts: T.pts.length, records: T.records.length, grab: !!TP.grab, loupe: loupe.style.display, loupeSide: loupe.style.left === '12px' ? 'left' : 'right' }), put: tpPut },
       select: { at: (x, y, add) => { const o = origin(); const r = selectAt(x - o[0], y - o[1], !!add); return r && selInfo(r); }, list: () => S.sel.map(selInfo), count: () => objsList().length, clear: () => { S.sel = []; T.dirty = true; renderPanel(); }, zoom: () => selZoom(), candidates: () => S.cand.map(selInfo) },
       snap: { at: (x, y, px) => { const o = origin(); const rw = (px || 14) / pxPerUnit(); const r = snapAt(x - o[0], y - o[1], rw, false); return r && { x: r.p[0] + o[0], y: r.p[1] + o[1], type: r.type }; }, set: (o) => { Object.assign(SNAP, o); return Object.assign({}, SNAP); }, get: () => Object.assign({}, SNAP) },
       exportPng: () => exportPng(false), downloadPng: () => exportPng(true), openPanel, state: () => ({ tool: T.tool, finds: T.find.res.length, records: T.records.length, views: T.views.length, panel: panelKind })

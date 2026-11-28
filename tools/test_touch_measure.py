@@ -10,7 +10,7 @@ import websockets
 ROOT = str(Path(__file__).resolve().parent.parent)
 PORT, DBG = 8795, 9351
 CHROME = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
-OFFSET = 70
+OFFSET = 0
 fails = []
 
 
@@ -120,6 +120,14 @@ async def main():
 
             # ③ 둘째 점: 끝점 B 에서 손을 떼면 거리가 바로 기록됨
             await aim_at((100, 100))
+            await asyncio.sleep(0.5)
+            for _ in range(3):                                             # 끌어 가며 십자선 위치(pt) 와 고무줄 끝(hover) 이 같은지(손가락 밑으로 튀지 않는지)
+                bx0, by0 = await toscreen((100, 100))
+                await touch('touchMove', [(bx0 + 6 + _, by0 + OFFSET + 8 + _)])
+                await asyncio.sleep(0.3)
+                st = await state()
+                same_pt = st['hover'] is not None and st['pt'] is not None and abs(st['hover'][0] - st['pt'][0]) < 1e-6 and abs(st['hover'][1] - st['pt'][1]) < 1e-6
+                check(f"고무줄 끝이 십자선 위치를 따라감(손가락 밑으로 튀지 않음) #{_ + 1}", same_pt, (st['hover'], st['pt']))
             await touch('touchEnd', [])
             await asyncio.sleep(0.4)
             recs = await ev("window.cadTools.records()")
