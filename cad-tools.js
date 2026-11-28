@@ -143,45 +143,92 @@
     }
     function coordAt(a) { const o = origin(); const r = { type: '좌표', x: a[0], y: a[1], pts: [[a[0] - o[0], a[1] - o[1]]] }; addRecord(r); return r; }
 
-    function snapPoint(wx, wy, rw) {
-      if (!app.lite) return null;
-      let best = null, bd = rw * rw;
+    // ── 스냅: 끝점(□) · 중점(△) · 교차점(×). 커서 둘레의 선분만 모아서 계산한다(큰 도면에서도 클릭마다 수십 ms) ──
+    const SNAP = { on: store.get('snapOn', true), end: store.get('snapEnd', true), mid: store.get('snapMid', true), int: store.get('snapInt', true) };
+    const SNAP_NAME = { end: '끝점', mid: '중점', int: '교차' };
+    /* (wx,wy) 둘레 r 안에 걸치는 선분을 [x1,y1,x2,y2] 로 모은다(최대 cap 개). v2 인스턴스는 삽입 변환을 적용한다. */
+    function nearSegments(wx, wy, r, cap) {
+      const out = [];
+      const x0 = wx - r, x1 = wx + r, y0 = wy - r, y1 = wy + r;
       for (const L of app.lite.lines) {
+        if (out.length >= cap) break;
         if (!L.obj.parent || !L.obj.parent.visible) continue;
         const a = L.obj.geometry.attributes.position.array;
-        if (L.inst) {                                   // v2 인스턴스: 블록 좌표를 삽입 변환으로 옮겨서 비교(범위가 가까운 삽입만)
+        if (L.inst) {
           const { A, B, n, bb } = L.inst;
-          for (let k = 0; k < n; k++) {
+          for (let k = 0; k < n && out.length < cap; k++) {
             const ma = A[k * 3], mc = A[k * 3 + 1], me = A[k * 3 + 2], mb = B[k * 3], md = B[k * 3 + 1], mf = B[k * 3 + 2];
-            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
             for (let c = 0; c < 4; c++) {
               const px = c & 1 ? bb[2] : bb[0], py = c & 2 ? bb[3] : bb[1];
               const tx = ma * px + mc * py + me, ty = mb * px + md * py + mf;
-              if (tx < x0) x0 = tx; if (tx > x1) x1 = tx; if (ty < y0) y0 = ty; if (ty > y1) y1 = ty;
+              if (tx < bx0) bx0 = tx; if (tx > bx1) bx1 = tx; if (ty < by0) by0 = ty; if (ty > by1) by1 = ty;
             }
-            if (wx < x0 - rw || wx > x1 + rw || wy < y0 - rw || wy > y1 + rw) continue;
-            for (let i = 0; i < a.length; i += 2) {
-              const tx = ma * a[i] + mc * a[i + 1] + me, ty = mb * a[i] + md * a[i + 1] + mf;
-              const dx = tx - wx, dy = ty - wy, d = dx * dx + dy * dy;
-              if (d < bd) { bd = d; best = [tx, ty]; }
+            if (x1 < bx0 || x0 > bx1 || y1 < by0 || y0 > by1) continue;
+            for (let i = 0; i + 3 < a.length && out.length < cap; i += 4) {
+              const ax = ma * a[i] + mc * a[i + 1] + me, ay = mb * a[i] + md * a[i + 1] + mf;
+              const bx = ma * a[i + 2] + mc * a[i + 3] + me, by = mb * a[i + 2] + md * a[i + 3] + mf;
+              if ((ax < x0 && bx < x0) || (ax > x1 && bx > x1) || (ay < y0 && by < y0) || (ay > y1 && by > y1)) continue;
+              out.push([ax, ay, bx, by]);
             }
           }
           continue;
         }
-        for (let i = 0; i < a.length; i += 2) {
-          const dx = a[i] - wx, dy = a[i + 1] - wy, d = dx * dx + dy * dy;
-          if (d < bd) { bd = d; best = [a[i], a[i + 1]]; }
+        for (let i = 0; i + 3 < a.length && out.length < cap; i += 4) {
+          const ax = a[i], ay = a[i + 1], bx = a[i + 2], by = a[i + 3];
+          if ((ax < x0 && bx < x0) || (ax > x1 && bx > x1) || (ay < y0 && by < y0) || (ay > y1 && by > y1)) continue;
+          out.push([ax, ay, bx, by]);
+        }
+      }
+      return out;
+    }
+    function segCross(p, q) {                                  // 두 선분의 교점(끝에서 만나는 것도 포함), 없으면 null
+      const d1x = p[2] - p[0], d1y = p[3] - p[1], d2x = q[2] - q[0], d2y = q[3] - q[1];
+      const den = d1x * d2y - d1y * d2x;
+      if (Math.abs(den) < 1e-12) return null;
+      const t = ((q[0] - p[0]) * d2y - (q[1] - p[1]) * d2x) / den;
+      const u = ((q[0] - p[0]) * d1y - (q[1] - p[1]) * d1x) / den;
+      if (t < -1e-9 || t > 1 + 1e-9 || u < -1e-9 || u > 1 + 1e-9) return null;
+      return [p[0] + d1x * t, p[1] + d1y * t];
+    }
+    /* 스냅 후보: {p:[x,y], type:'end'|'mid'|'int'} 또는 null. 끝점·교차점을 중점보다 약간 우선한다. */
+    function snapAt(wx, wy, rw, hover) {
+      if (!app.lite || !SNAP.on) return null;
+      const segs = nearSegments(wx, wy, rw * 1.2, hover ? 250 : 700);
+      let best = null, bd = Infinity;
+      const tryP = (x, y, type, w) => {
+        const dx = x - wx, dy = y - wy, d = Math.sqrt(dx * dx + dy * dy);
+        if (d > rw) return;
+        const sc = d * w;
+        if (sc < bd) { bd = sc; best = { p: [x, y], type }; }
+      };
+      for (const sg of segs) {
+        if (SNAP.end) { tryP(sg[0], sg[1], 'end', 1); tryP(sg[2], sg[3], 'end', 1); }
+        if (SNAP.mid) tryP((sg[0] + sg[2]) / 2, (sg[1] + sg[3]) / 2, 'mid', 1.25);
+      }
+      if (SNAP.int && segs.length > 1) {
+        const n = Math.min(segs.length, hover ? 120 : 300);
+        for (let i = 0; i < n; i++) {
+          const p = segs[i];
+          for (let j = i + 1; j < n; j++) {
+            const q = segs[j];
+            if (Math.max(p[0], p[2]) < Math.min(q[0], q[2]) || Math.max(q[0], q[2]) < Math.min(p[0], p[2]) || Math.max(p[1], p[3]) < Math.min(q[1], q[3]) || Math.max(q[1], q[3]) < Math.min(p[1], p[3])) continue;
+            const c = segCross(p, q);
+            if (c) tryP(c[0], c[1], 'int', 1.05);
+          }
         }
       }
       return best;
     }
+    function snapPoint(wx, wy, rw) { const r = snapAt(wx, wy, rw, false); return r ? r.p : null; }       // (이전 이름 유지)
     const totalVerts = () => (app.lite ? app.lite.lines.reduce((n, l) => n + l.obj.geometry.attributes.position.count * (l.inst ? l.inst.n : 1), 0) : 0);
 
     function pickPoint(px, py, forceSnap) {
       const [wx, wy] = s2w(px, py);
       const rw = 14 / pxPerUnit();
-      const s = (forceSnap || totalVerts() < 8e6) ? snapPoint(wx, wy, rw) : null;
-      return { p: s || [wx, wy], snapped: !!s };
+      const big = totalVerts() >= 8e6;
+      const r = (forceSnap || !big) ? snapAt(wx, wy, rw, !forceSnap) : null;
+      return { p: r ? r.p : [wx, wy], snapped: !!r, type: r ? r.type : null };
     }
     function absOf(p) { const o = origin(); return [p[0] + o[0], p[1] + o[1]]; }
 
@@ -320,6 +367,13 @@
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); const btn = down.t; down = null;
       if (moved < 6 && btn === 0 && ['dist', 'area', 'coord', 'edit'].includes(T.tool)) { const r = canvas.getBoundingClientRect(); onClick(e.clientX - r.left, e.clientY - r.top); }
     });
+    let snapMark = null, lastSnapT = 0;
+    canvas.addEventListener('pointermove', (e) => {         // 스냅 표식(측정·면적·좌표·편집 도구가 켜져 있을 때)
+      if (!['dist', 'area', 'coord', 'edit'].includes(T.tool) || !isLite()) { if (snapMark) { snapMark = null; T.dirty = true; } return; }
+      const nw = performance.now(); if (nw - lastSnapT < 70) return; lastSnapT = nw;
+      const rr = canvas.getBoundingClientRect(); const r = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false);
+      snapMark = r.snapped ? { p: r.p, type: r.type } : null; T.dirty = true;
+    });
     canvas.addEventListener('pointermove', (e) => {
       if (T.tool === 'edit' && E.step === 'target' && isLite()) { const nw = performance.now(); if (nw - lastHover < 50) return; lastHover = nw; const rr = canvas.getBoundingClientRect(); E.hover = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false).p; T.dirty = true; return; }
       if (!['dist', 'area'].includes(T.tool) || !T.pts.length || !isLite()) return;
@@ -413,6 +467,14 @@
           ctx.strokeStyle = '#ffffff'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(hx, hy); ctx.stroke(); ctx.setLineDash([]);
           label(ctx, hx, hy, `ΔX ${fmt(dx)}  ΔY ${fmt(dy)}`);
         }
+      }
+      if (snapMark && ['dist', 'area', 'coord', 'edit'].includes(T.tool)) {                  // 스냅 표식: 끝점 □ · 중점 △ · 교차 ×
+        const [sx, sy] = w2s(snapMark.p[0], snapMark.p[1]); const col = { end: '#2bff7a', mid: '#2bd8ff', int: '#ff4df0' }[snapMark.type];
+        ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
+        if (snapMark.type === 'end') ctx.rect(sx - 6, sy - 6, 12, 12);
+        else if (snapMark.type === 'mid') { ctx.moveTo(sx, sy - 7); ctx.lineTo(sx + 7, sy + 6); ctx.lineTo(sx - 7, sy + 6); ctx.closePath(); }
+        else { ctx.moveTo(sx - 6, sy - 6); ctx.lineTo(sx + 6, sy + 6); ctx.moveTo(sx + 6, sy - 6); ctx.lineTo(sx - 6, sy + 6); }
+        ctx.stroke(); label(ctx, sx + 18, sy - 2, SNAP_NAME[snapMark.type]);
       }
       if (zw) { ctx.strokeStyle = '#4da3ff'; ctx.fillStyle = 'rgba(77,163,255,.15)'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); const x = Math.min(zw.x0, zw.x1), y = Math.min(zw.y0, zw.y1), w = Math.abs(zw.x1 - zw.x0), h = Math.abs(zw.y1 - zw.y0); ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h); ctx.setLineDash([]); }
     }
@@ -528,9 +590,11 @@
         const hint = { dist: '두 점을 차례로 누르세요 (끝점에 자동으로 붙습니다)', area: '점을 차례로 누르고 Enter 또는 더블클릭으로 끝내세요 · Backspace 한 점 취소', coord: '좌표를 볼 점을 누르세요' }[T.tool] || '아래 측정 도구를 고르세요';
         panel.innerHTML = `<h4>측정 <button class="btn btn-icon-only" id="pClose" style="border:none;height:22px;width:22px">✕</button></h4>
           <div class="muted">${hint}${T.tool === 'area' ? ` · 현재 ${T.pts.length}점` : ''}</div>
+          <div class="row" style="gap:10px;flex-wrap:wrap"><label><input type="checkbox" id="snOn" ${SNAP.on ? 'checked' : ''}>스냅</label><label><input type="checkbox" id="snEnd" ${SNAP.end ? 'checked' : ''}>끝점 □</label><label><input type="checkbox" id="snMid" ${SNAP.mid ? 'checked' : ''}>중점 △</label><label><input type="checkbox" id="snInt" ${SNAP.int ? 'checked' : ''}>교차 ×</label></div>
           <div class="row">${T.tool === 'area' ? '<button class="btn" id="mDone">면적 완료</button>' : ''}<button class="btn" id="mClear">기록 지우기</button><button class="btn" id="mCsv">CSV 저장</button></div>
           <div class="list">${T.records.map((r, i) => `<div class="item"><b>${i + 1}</b><span>${r.type === '거리' ? `거리 ${fmt(r.value)} (ΔX ${fmt(r.dx)}, ΔY ${fmt(r.dy)}, ${r.angle.toFixed(1)}°)` : r.type === '면적' ? `면적 ${fmt(r.value)} · 둘레 ${fmt(r.perimeter)}` : `X ${fmt(r.x)}, Y ${fmt(r.y)}`}</span></div>`).join('') || '<span class="muted">기록이 없습니다</span>'}</div>
           <div class="muted">값은 도면 단위(mm 도면이면 mm, 면적은 mm²)입니다.</div>`;
+        [['snOn', 'on', 'snapOn'], ['snEnd', 'end', 'snapEnd'], ['snMid', 'mid', 'snapMid'], ['snInt', 'int', 'snapInt']].forEach(([id, k, sk]) => { const el = $(id); if (el) el.onchange = (e) => { SNAP[k] = e.target.checked; store.set(sk, SNAP[k]); }; });
         if ($('mDone')) $('mDone').onclick = () => { finishArea(); renderPanel(); };
         $('mClear').onclick = () => { T.records = []; T.pts = []; T.hover = null; T.dirty = true; renderPanel(); };
         $('mCsv').onclick = () => downloadCsv();
@@ -649,6 +713,7 @@
       }
       if (e.ctrlKey || e.altKey || e.metaKey) return;
       if (e.key === 'F7') { e.preventDefault(); CMD.GRID(); return; }
+      if (e.key === 'F3') { e.preventDefault(); SNAP.on = !SNAP.on; store.set('snapOn', SNAP.on); toast('스냅 ' + (SNAP.on ? '켬' : '끔')); renderPanel(); return; }
       if (e.key === 'Delete') { return; }
       if (/^[a-zA-Z0-9]$/.test(e.key)) { e.preventDefault(); showCmd(e.key.toUpperCase()); }
     });
@@ -668,6 +733,7 @@
       edit: { open: editOpen, pick: async (x, y) => { const s = await editPick([x, y]); return s && { handle: s.handle, name: s.name, layer: s.layer, bbox: s.bbox }; }, move: (dx, dy) => editApply('move', dx, dy), copy: (dx, dy) => editApply('copy', dx, dy), undo: editUndo, save: editSave,
         ops: () => E.ops.map((o) => ({ op: o.op, handle: o.handle, name: o.name, dx: o.dx, dy: o.dy })), state: () => ({ ready: E.ready, busy: E.busy, step: E.step, op: E.op, selected: E.sel && E.sel.name, ops: E.ops.length, saved: E.saved, msg: E.msg }), clearSel: () => { E.sel = null; T.dirty = true; } },
       command: (t) => runCmd(t),
+      snap: { at: (x, y, px) => { const o = origin(); const rw = (px || 14) / pxPerUnit(); const r = snapAt(x - o[0], y - o[1], rw, false); return r && { x: r.p[0] + o[0], y: r.p[1] + o[1], type: r.type }; }, set: (o) => { Object.assign(SNAP, o); return Object.assign({}, SNAP); }, get: () => Object.assign({}, SNAP) },
       exportPng: () => exportPng(false), downloadPng: () => exportPng(true), openPanel, state: () => ({ tool: T.tool, finds: T.find.res.length, records: T.records.length, views: T.views.length, panel: panelKind })
     };
     app.updateLayerPanel();
