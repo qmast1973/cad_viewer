@@ -35,8 +35,10 @@ function editLine(line) {                  // 한 줄 보내고 한 줄 답 받�
 }
 process.on('exit', () => { try { editProc && editProc.kill(); } catch (e) {} });
 
-const PORT = 8795;
+const PORT = Number(process.env.CAD_PORT) || 8795;          // 데스크톱 앱(Electron)은 빈 포트와 127.0.0.1 만 쓴다
+const HOST = process.env.CAD_HOST || '0.0.0.0';
 const BASE_DIR = path.resolve(__dirname, '..');
+const SAVE_DIR = process.env.CAD_SAVE_DIR || path.join(BASE_DIR, '저장');       // 편집 결과 저장 위치
 const CONVERT_SCRIPT = path.join(__dirname, 'convert_cli.js');
 
 const MIME_TYPES = {
@@ -206,7 +208,7 @@ const server = http.createServer(async (req, res) => {
           const fmt = j.format === 'dwg' ? 'dwg' : 'dxf';
           const ops = (j.ops || []).filter((o) => (o.op === 'move' || o.op === 'copy') && /^\d+$/.test(String(o.handle)) && isFinite(o.dx) && isFinite(o.dy));
           if (!ops.length) return send(400, { error: '저장할 변경이 없습니다.' });
-          const outDir = path.join(BASE_DIR, '저장');
+          const outDir = SAVE_DIR;
           await fs.promises.mkdir(outDir, { recursive: true });
           const t = new Date(); const pad = (n) => String(n).padStart(2, '0');
           const stamp = `${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}-${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}`;
@@ -222,7 +224,7 @@ const server = http.createServer(async (req, res) => {
         }
         if (cmd === 'download') {                                    // 저장 폴더의 파일을 내려받기(폴더 밖 경로는 거부)
           const f = path.basename(url.searchParams.get('f') || '');
-          const p = path.join(BASE_DIR, '저장', f);
+          const p = path.join(SAVE_DIR, f);
           if (!f || !fs.existsSync(p)) return send(404, { error: '파일 없음' });
           const data = await fs.promises.readFile(p);
           res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': data.length, 'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(f) });
@@ -234,6 +236,21 @@ const server = http.createServer(async (req, res) => {
         send(500, { error: err.message });
       }
     });
+    return;
+  }
+
+  // 데스크톱 앱: 실행할 때 넘겨받은 도면 파일 한 개(CAD_OPEN)를 화면에 건네준다. 이 PC(127.0.0.1)에서만, 확장자 제한.
+  if (req.method === 'GET' && pathname === '/api/open-arg') {
+    const ra = req.socket.remoteAddress || '';
+    const f = process.env.CAD_OPEN || '';
+    if (!(ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1') || !f || !/\.(dwg|dxf|stl|obj)$/i.test(f) || !fs.existsSync(f)) {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    const data = await fs.promises.readFile(f);
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': data.length, 'X-File-Name': encodeURIComponent(path.basename(f)) });
+    res.end(data);
     return;
   }
 
@@ -257,7 +274,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, HOST, () => {
   console.log(`[CAD Viewer Server] 실행 중: http://127.0.0.1:${PORT}`);
   console.log(`[DWG Converter] 독립 격리 프로세스 모드로 가동 완료 (/api/convert-dwg)`);
 });

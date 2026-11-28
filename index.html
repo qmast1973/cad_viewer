@@ -387,7 +387,7 @@
           <svg viewBox="0 0 24 24"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.2L19.5 8 12 11.8 4.5 8 12 4.2zM4 9.5l7 3.5v7l-7-3.5v-7zm9 10.5v-7l7-3.5v7l-7 3.5z"/></svg>
           <span>CAD 뷰어</span>
           <!-- 버전 표시: 고칠 때마다 번호·시각을 올린다(예전 화면이 캐시로 남았는지 바로 알아보려는 용도) -->
-          <small id="appVersion" title="빌드 2026-11-28 20:40 — 글자는 도면과 같이 커지고 작아짐(캐드 방식)으로 되돌림, 휠 확대 버그 수정, 편집(이동·복사)·캐드 단축키·글자 크기 고정·휠 확대 15%·축척 표시" style="margin-left:8px;font-size:11px;color:var(--text-muted);font-weight:400;white-space:nowrap">v1.7 · 11-28 20:40</small>
+          <small id="appVersion" title="빌드 2026-11-28 20:20 — PC 앱(Electron)용 연결 추가, 글자는 도면과 같이 커지고 작아짐(캐드 방식)으로 되돌림, 휠 확대 버그 수정, 편집(이동·복사)·캐드 단축키·글자 크기 고정·휠 확대 15%·축척 표시" style="margin-left:8px;font-size:11px;color:var(--text-muted);font-weight:400;white-space:nowrap">v1.8 · 11-28 20:20</small>
         </div>
 
         <input type="file" id="fileInput" accept=".dwg,.dxf,.stl,.obj" style="display: none;">
@@ -1898,8 +1898,23 @@
         getState: () => app.getState()
       };
 
-      // 시작 시 기본 샘플(브래킷 2D 도면) 자동 로드
-      app.loadSample('bracket-2d.dxf');
+      // 데스크톱 앱(?app=1): 실행할 때 넘겨받은 도면(더블클릭·열기 연결)이 있으면 그것을 열고, 없으면 빈 화면에서 시작한다.
+      // 웹에서는 예전처럼 기본 샘플(브래킷 2D 도면)을 자동으로 연다.
+      if (/[?&]app=1(&|$)/.test(location.search)) {
+        window.cadAppMode = true;
+        document.title = 'CAD 뷰어';
+        const ss = document.getElementById('sampleSelect'); if (ss) ss.style.display = 'none';        // 앱에는 샘플 도면이 없다
+        // 앱 본체(Electron)가 새 파일을 넘기면(이미 켜진 앱에 도면을 더블클릭) 이 함수로 다시 읽어 연다.
+        window.cadOpenArg = () => fetch('/api/open-arg').then(async (r) => {
+          if (r.status !== 200) return false;
+          const name = decodeURIComponent(r.headers.get('X-File-Name') || 'drawing.dwg');
+          app.loadFile(new File([await r.blob()], name));
+          return true;
+        });
+        window.cadOpenArg().then((ok) => { if (!ok) document.getElementById('status-stats').textContent = '파일 열기를 눌러 도면(DWG·DXF)을 여세요'; }).catch(() => {});
+      } else {
+        app.loadSample('bracket-2d.dxf');
+      }
     });
   </script>
   <script src="cad-tools.js"></script>

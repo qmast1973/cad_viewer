@@ -548,9 +548,10 @@
           <div class="row"><input type="text" id="eDx" placeholder="ΔX" style="width:80px"><input type="text" id="eDy" placeholder="ΔY" style="width:80px">
             <button class="btn" id="eApply" style="width:auto;padding:0 8px" ${E.sel ? '' : 'disabled'}>값으로 ${E.op === 'copy' ? '복사' : '이동'}</button></div>
           <div class="list">${E.ops.map((o, i) => `<div class="item"><b>${i + 1}</b><span>${o.op === 'move' ? '이동' : '복사'} ${esc(o.name)} (ΔX ${fmt(o.dx)}, ΔY ${fmt(o.dy)})</span></div>`).join('') || '<span class="muted">변경 없음</span>'}</div>
-          ${E.saved ? `<div class="muted">저장됨: ${esc(E.saved.path)}<br><a href="/api/edit/download?f=${encodeURIComponent(E.saved.file)}" style="color:var(--accent-color)">내려받기</a></div>` : ''}
+          ${E.saved ? `<div class="muted">저장됨: ${esc(E.saved.path)}<br>${window.cadApp ? '<button class="btn" id="eShow" style="width:auto;padding:0 8px;height:24px">폴더에서 보기</button>' : `<a href="/api/edit/download?f=${encodeURIComponent(E.saved.file)}" style="color:var(--accent-color)">내려받기</a>`}</div>` : ''}
           <div class="muted">단축키: M 이동 · CO/CP 복사 · U 되돌리기 · Ctrl+S 저장 · Esc 취소. 원본 도면은 고치지 않고 '저장' 폴더에 새 DXF 로 씁니다.</div>`;
         $('eOpen').onclick = () => editOpen();
+        if ($('eShow')) $('eShow').onclick = () => window.cadApp.showInFolder(E.saved.path);
         $('eMove').onclick = () => startOp('move'); $('eCopy').onclick = () => startOp('copy');
         $('eUndo').onclick = () => editUndo(); $('eSaveDwg').onclick = () => editSave('dwg'); $('eSaveDxf').onclick = () => editSave('dxf');
         $('eApply').onclick = () => { editApply(E.op === 'copy' ? 'copy' : 'move', parseFloat($('eDx').value), parseFloat($('eDy').value)); if (E.op !== 'copy') { E.sel = null; E.step = 'select'; } renderPanel(); };
