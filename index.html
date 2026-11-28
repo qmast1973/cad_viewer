@@ -4,6 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>경량 CAD 인앱 뷰어 (DWG / 2D DXF / 3D STL & OBJ)</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#121317">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
   <style>
     :root {
       --bg-color: #1a1b20;
@@ -387,7 +391,7 @@
           <svg viewBox="0 0 24 24"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.2L19.5 8 12 11.8 4.5 8 12 4.2zM4 9.5l7 3.5v7l-7-3.5v-7zm9 10.5v-7l7-3.5v7l-7 3.5z"/></svg>
           <span>CAD 뷰어</span>
           <!-- 버전 표시: 고칠 때마다 번호·시각을 올린다(예전 화면이 캐시로 남았는지 바로 알아보려는 용도) -->
-          <small id="appVersion" title="빌드 2026-11-28 21:20 — 스냅(끝점·중점·교차, F3), 폰 파일 선택창에서 DWG·DXF 가 회색으로 나오던 문제 수정, 덕트 직사각형 틀(자르기 경계 틀) 표시, 덕트 길이 수정(블록 자르기 XCLIP 적용), PC 앱(Electron)용 연결, 글자는 도면과 같이 커지고 작아짐(캐드 방식)으로 되돌림, 휠 확대 버그 수정, 편집(이동·복사)·캐드 단축키·글자 크기 고정·휠 확대 15%·축척 표시" style="margin-left:8px;font-size:11px;color:var(--text-muted);font-weight:400;white-space:nowrap">v1.12 · 11-28 21:20</small>
+          <small id="appVersion" title="빌드 2026-11-28 21:55 — 앱 설치(PWA)·오프라인·공유로 열기, 부품 선택, 스냅(끝점·중점·교차, F3), 폰 파일 선택창에서 DWG·DXF 가 회색으로 나오던 문제 수정, 덕트 직사각형 틀(자르기 경계 틀) 표시, 덕트 길이 수정(블록 자르기 XCLIP 적용), PC 앱(Electron)용 연결, 글자는 도면과 같이 커지고 작아짐(캐드 방식)으로 되돌림, 휠 확대 버그 수정, 편집(이동·복사)·캐드 단축키·글자 크기 고정·휠 확대 15%·축척 표시" style="margin-left:8px;font-size:11px;color:var(--text-muted);font-weight:400;white-space:nowrap">v1.13 · 11-28 21:55</small>
         </div>
 
         <input type="file" id="fileInput" accept=".dwg,.dxf,.stl,.obj" style="display: none;">
@@ -404,6 +408,7 @@
           <option value="sample-3d.stl">L-브래킷 (3D STL)</option>
         </select>
 
+        <button class="btn" id="installBtn" title="이 뷰어를 폰·PC 에 앱으로 설치(인터넷 없이도 열리고, 파일 앱에서 공유로 도면을 바로 열 수 있음)" style="display:none">앱 설치</button>
         <button class="btn btn-icon-only" id="layerToggleBtn" title="도면 레이어 관리">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
         </button>
@@ -1916,9 +1921,34 @@
           return true;
         });
         window.cadOpenArg().then((ok) => { if (!ok) document.getElementById('status-stats').textContent = '파일 열기를 눌러 도면(DWG·DXF)을 여세요'; }).catch(() => {});
+      } else if (/[?&]shared=1(&|$)/.test(location.search) && window.caches) {
+        // 설치한 앱으로 "공유 → CAD 뷰어" 했을 때: 서비스 워커가 맡아 둔 파일을 꺼내 연다
+        (async () => {
+          try {
+            const c = await caches.open('cadviewer-shared');
+            const key = new URL('shared-file', new URL('./', location.href)).href;
+            const r = await c.match(key);
+            if (!r) { app.loadSample('bracket-2d.dxf'); return; }
+            const name = decodeURIComponent(r.headers.get('X-File-Name') || 'shared.dwg');
+            const blob = await r.blob();
+            await c.delete(key);
+            history.replaceState(null, '', location.pathname + '?pwa=1');
+            app.loadFile(new File([blob], name));
+          } catch (e) { app.loadSample('bracket-2d.dxf'); }
+        })();
       } else {
         app.loadSample('bracket-2d.dxf');
       }
+
+      // 폰·PC 에 앱으로 설치(PWA) + 오프라인용 서비스 워커. 앱(Electron) 모드·file:// 에서는 쓰지 않는다.
+      if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !/[?&]app=1(&|$)/.test(location.search)) {
+        navigator.serviceWorker.register('sw.js').catch((e) => console.warn('[서비스 워커 등록 실패]', e && e.message));
+      }
+      let installEvt = null;
+      const installBtn = document.getElementById('installBtn');
+      window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; if (installBtn) installBtn.style.display = ''; });
+      window.addEventListener('appinstalled', () => { installEvt = null; if (installBtn) installBtn.style.display = 'none'; });
+      if (installBtn) installBtn.addEventListener('click', async () => { if (!installEvt) return; installEvt.prompt(); try { await installEvt.userChoice; } catch (e) {} installEvt = null; installBtn.style.display = 'none'; });
     });
   </script>
   <script src="cad-tools.js"></script>
