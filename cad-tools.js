@@ -421,6 +421,7 @@
     // ── 터치(폰) 측정: 손가락으로 끌어도 화면이 같이 움직이지 않게, 한 손가락은 '십자선'만 옮기고(손가락 위쪽 70px) 끝점·중점·교차에 붙는 것을
     //    보여 준 뒤 [점 찍기] 를 눌러 확정한다. 화면 이동·확대는 두 손가락. 마우스는 예전처럼 누르면 바로 찍힘. ──
     let snapMark = null, lastSnapT = 0;
+    const DG = { moves: 0, touchMoves: 0, picks: 0, hits: 0, lastMs: 0, lastType: '-' };
     const TOUCH_TOOLS = ['dist', 'path', 'area', 'coord', 'edit'];
     const TP = { coarse: !!(window.matchMedia && matchMedia('(pointer: coarse)').matches), showPanel: false, cross: null, snap: null, fingers: new Set(), down: false, last: 0, aim: false, moved: false, start: null, grab: null };
     const TP_OFFSET = 0;                                                  // 손가락이 짚은 곳이 곧 커서(돋보기로 가려진 부분을 본다)
@@ -532,7 +533,7 @@
       const r = canvas.getBoundingClientRect();
       const x = e.clientX - r.left, y = Math.max(0, e.clientY - r.top - TP_OFFSET);
       TP.cross = { x, y };
-      const q = pickPoint(x, y, false, 24);
+      const t0 = performance.now(); const q = pickPoint(x, y, false, 24); DG.touchMoves++; DG.picks++; DG.lastMs = Math.round(performance.now() - t0); if (q.snapped) { DG.hits++; DG.lastType = q.type; }
       TP.snap = q.snapped ? { p: q.p, type: q.type } : null; TP.pt = q.p; snapMark = TP.snap;
       if (T.tool === 'edit' && E.step === 'target') E.hover = q.p; else if (['dist', 'path', 'area'].includes(T.tool) && T.pts.length) T.hover = q.p;
       if (TP.grab) { TP.grab.p[0] = q.p[0]; TP.grab.p[1] = q.p[1]; tpRecompute(TP.grab.rec); }
@@ -590,7 +591,8 @@
       if (e.pointerType === 'touch') return;
       if (!['dist', 'path', 'area', 'coord', 'edit'].includes(T.tool) || !isLite()) { if (snapMark) { snapMark = null; T.dirty = true; } return; }
       const nw = performance.now(); if (nw - lastSnapT < (isBig() ? 120 : 70)) return; lastSnapT = nw;
-      const rr = canvas.getBoundingClientRect(); const r = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false);
+      const rr = canvas.getBoundingClientRect(); DG.moves++; const t0 = performance.now(); const r = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false);
+      DG.picks++; DG.lastMs = Math.round(performance.now() - t0); if (r.snapped) { DG.hits++; DG.lastType = r.type; }
       snapMark = r.snapped ? { p: r.p, type: r.type } : null; T.dirty = true;
     });
     canvas.addEventListener('pointermove', (e) => {
@@ -990,6 +992,7 @@
       edit: { open: editOpen, pick: async (x, y) => { const s = await editPick([x, y]); return s && { handle: s.handle, name: s.name, layer: s.layer, bbox: s.bbox }; }, move: (dx, dy) => editApply('move', dx, dy), copy: (dx, dy) => editApply('copy', dx, dy), undo: editUndo, save: editSave,
         ops: () => E.ops.map((o) => ({ op: o.op, handle: o.handle, name: o.name, dx: o.dx, dy: o.dy })), state: () => ({ ready: E.ready, busy: E.busy, step: E.step, op: E.op, selected: E.sel && E.sel.name, ops: E.ops.length, saved: E.saved, msg: E.msg }), clearSel: () => { E.sel = null; T.dirty = true; } },
       command: (t) => runCmd(t),
+      snapDiag: () => `스냅 진단: 가벼운 방식(lite) ${app.lite ? '예' : '아니오 → 스냅 불가'} · 도구 ${T.tool || '없음'} · 스냅 ${SNAP.on ? '켜짐' : '꺼짐'}(끝점 ${SNAP.end ? 'O' : 'X'} 중점 ${SNAP.mid ? 'O' : 'X'} 교차 ${SNAP.int ? 'O' : 'X'}) · 큰 도면 ${isBig() ? '예' : '아니오'} · 마우스 이동 ${DG.moves}회 · 터치 이동 ${DG.touchMoves}회 · 계산 ${DG.picks}회 중 스냅 ${DG.hits}회 · 마지막 계산 ${DG.lastMs}ms · 마지막 스냅 ${DG.lastType}`,
       view: { toScreen: (x, y) => { const o = origin(); const [sx, sy] = w2s(x - o[0], y - o[1]); const r = canvas.getBoundingClientRect(); return [sx + r.left, sy + r.top]; } },
       touch: { state: () => ({ cross: TP.cross, snap: TP.snap && TP.snap.type, bar: tpBar.style.display, one: app.controls.touches.ONE, hover: T.hover, pt: TP.pt, pts: T.pts.length, records: T.records.length, grab: !!TP.grab, loupe: loupe.style.display, loupeSide: loupe.style.left === '12px' ? 'left' : 'right' }), put: tpPut },
       select: { at: (x, y, add) => { const o = origin(); const r = selectAt(x - o[0], y - o[1], !!add); return r && selInfo(r); }, list: () => S.sel.map(selInfo), count: () => objsList().length, clear: () => { S.sel = []; T.dirty = true; renderPanel(); }, zoom: () => selZoom(), candidates: () => S.cand.map(selInfo) },
