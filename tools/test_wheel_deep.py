@@ -60,10 +60,15 @@ async def main():
             await asyncio.sleep(2)
             fit = await ev("window.cadViewer.app.camera.position.distanceTo(window.cadViewer.app.controls.target)")
             print('  .. 열림, 맞춤 거리', round(fit), flush=True)
+            # 내용이 있는 곳(글자 '1807')을 화면 가운데로 옮기고 그 위에서 확대(실제로 쓰는 방식)
+            xy = await ev("(()=>{const a=window.cadViewer.app;window.cadTools.find('1807');const r=window.cadTools.findResults();if(!r.length)return null;const o=a.lite.head.origin;return [r[0].x-o[0],r[0].y-o[1]]})()")
+            if xy:
+                await ev("(()=>{const a=window.cadViewer.app;a.controls.target.set(%f,%f,0);a.camera.position.set(%f,%f,a.camera.position.z);a.controls.update();window.cadTools.find('');a.textsDirty=true;return 1})()" % (xy[0], xy[1], xy[0], xy[1]))
+                await asyncio.sleep(1)
             last, stall = fit, 0
             ratio = 1.0
             for k in range(1, 1201):
-                await send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': 640, 'y': 400, 'deltaX': 0, 'deltaY': -100})
+                await send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': int(os.environ.get('WX', 640)), 'y': int(os.environ.get('WY', 400)), 'deltaX': 0, 'deltaY': -100})
                 if k % 10 == 0:
                     await asyncio.sleep(0.2)
                     d = await ev("window.cadViewer.app.camera.position.distanceTo(window.cadViewer.app.controls.target)")
@@ -72,13 +77,15 @@ async def main():
                         print(f'  휠 {k}번: 거리 {d:.2f} 배율 {ratio:.0f}x', flush=True)
                     stall = stall + 1 if abs(d - last) < 1e-9 * max(d, 1) else 0
                     last = d
-                    if ratio >= 500 or stall >= 3:
+                    if ratio >= float(os.environ.get('STOPAT', 500)) or stall >= 3:
                         break
-            check("휠로 약 500배까지 확대됨(중간에 멈추지 않음)", ratio >= 500, f"{ratio:.0f}배, 휠 {k}번")
+            check("휠로 목표 배율까지 확대됨(중간에 멈추지 않음)", ratio >= float(os.environ.get('STOPAT', 500)), f"{ratio:.0f}배, 휠 {k}번")
             cam = json.loads(await ev("JSON.stringify({near:window.cadViewer.app.camera.near,far:window.cadViewer.app.camera.far,d:window.cadViewer.app.camera.position.distanceTo(window.cadViewer.app.controls.target)})"))
+            st = await ev("document.getElementById('status-scale') && document.getElementById('status-scale').textContent")
+            check("상태줄에 확대 정도(축척·배율)가 표시됨", bool(st) and '배' in st, st)
             check("카메라 가까운 면이 거리보다 작음", cam['near'] < cam['d'], cam)
             r = await send('Page.captureScreenshot', {'format': 'png'})
-            Path(OUT, 'wheel_deep.png').write_bytes(base64.b64decode(r['data']))
+            Path(OUT, os.environ.get('SHOT', 'wheel_deep.png')).write_bytes(base64.b64decode(r['data']))
     finally:
         proc.terminate(); srv and srv.terminate(); await asyncio.sleep(1)
         shutil.rmtree(prof, ignore_errors=True)

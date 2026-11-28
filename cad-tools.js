@@ -287,6 +287,17 @@
     const coordEl = document.createElement('span'); coordEl.id = 'status-coord'; coordEl.style.cssText = 'font-variant-numeric:tabular-nums;color:var(--accent-color);min-width:200px';
     coordEl.textContent = 'X: - Y: -';
     const fi = document.querySelector('.footer-info'); if (fi) fi.insertBefore(coordEl, fi.firstChild);
+    // 확대 정도 표시: 화면 100px 가 도면에서 몇 mm 인지(확대하면 숫자가 작아짐) + 전체 보기 대비 배율
+    const scaleEl = document.createElement('span'); scaleEl.id = 'status-scale'; scaleEl.style.cssText = 'font-variant-numeric:tabular-nums;color:var(--text-muted);margin-left:12px';
+    if (fi) fi.insertBefore(scaleEl, coordEl.nextSibling);
+    let fitDist0 = 0;
+    function showScale() {
+      if (!app.lite) { scaleEl.textContent = ''; return; }
+      const d = app.camera.position.distanceTo(app.controls.target);
+      if (!fitDist0 || d > fitDist0) fitDist0 = d;                         // 가장 멀리서 본 거리를 전체 보기로 간주
+      const mm = 100 / pxPerUnit();
+      scaleEl.textContent = `축척 100px ≈ ${mm >= 100 ? Math.round(mm).toLocaleString() : mm.toFixed(1)}mm · ${(fitDist0 / d).toFixed(fitDist0 / d < 10 ? 1 : 0)}배`;
+    }
     let coordRaf = 0, lastPt = null;
     function showCoord() {
       coordRaf = 0; if (!lastPt || !app.lite) { coordEl.textContent = 'X: - Y: -'; return; }
@@ -347,6 +358,7 @@
       const sig = app.camera.matrixWorld.elements.join(',') + '|' + app.camera.projectionMatrix.elements[0] + '|' + W + 'x' + H;
       if (!T.dirty && sig === T.sig) return;
       T.sig = sig; T.dirty = false;
+      showScale();
       if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
       const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
       if (!app.lite) return;
@@ -642,7 +654,7 @@
 
     // 도면을 새로 열면 찾기·측정 기록을 비움
     const origRender = app.renderLite.bind(app);
-    app.renderLite = function (buf, name) { T.find = { q: '', opts: T.find.opts, res: [], cur: -1 }; E.ready = false; E.sel = null; E.ops = []; E.step = 'idle'; E.op = null; E.base = null; E.hover = null; E.saved = null; E.msg = '편집을 시작하려면 [편집 준비]를 누르세요'; T.records = []; T.pts = []; T.hover = null; T.views = []; isolated = null; const r = origRender(buf, name); T.dirty = true; renderPanel(); return r; };
+    app.renderLite = function (buf, name) { fitDist0 = 0; T.find = { q: '', opts: T.find.opts, res: [], cur: -1 }; E.ready = false; E.sel = null; E.ops = []; E.step = 'idle'; E.op = null; E.base = null; E.hover = null; E.saved = null; E.msg = '편집을 시작하려면 [편집 준비]를 누르세요'; T.records = []; T.pts = []; T.hover = null; T.views = []; isolated = null; const r = origRender(buf, name); T.dirty = true; renderPanel(); return r; };
 
     // 에이전트용 조작 (window.cadTools)
     window.cadTools = {
