@@ -391,7 +391,7 @@
           <svg viewBox="0 0 24 24"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.2L19.5 8 12 11.8 4.5 8 12 4.2zM4 9.5l7 3.5v7l-7-3.5v-7zm9 10.5v-7l7-3.5v7l-7 3.5z"/></svg>
           <span>CAD 뷰어</span>
           <!-- 버전 표시: 고칠 때마다 번호·시각을 올린다(예전 화면이 캐시로 남았는지 바로 알아보려는 용도) -->
-          <small id="appVersion" title="빌드 2026-11-28 21:55 — 앱 설치(PWA)·오프라인·공유로 열기, 부품 선택, 스냅(끝점·중점·교차, F3), 폰 파일 선택창에서 DWG·DXF 가 회색으로 나오던 문제 수정, 덕트 직사각형 틀(자르기 경계 틀) 표시, 덕트 길이 수정(블록 자르기 XCLIP 적용), PC 앱(Electron)용 연결, 글자는 도면과 같이 커지고 작아짐(캐드 방식)으로 되돌림, 휠 확대 버그 수정, 편집(이동·복사)·캐드 단축키·글자 크기 고정·휠 확대 15%·축척 표시" style="margin-left:8px;font-size:11px;color:var(--text-muted);font-weight:400;white-space:nowrap">v1.13 · 11-28 21:55</small>
+          <small id="appVersion" title="빌드 2026-11-28 22:15 — 글자를 누르면 설치 진단, 앱 설치(PWA)·오프라인·공유로 열기, 부품 선택, 스냅(끝점·중점·교차, F3), 폰 파일 선택창에서 DWG·DXF 가 회색으로 나오던 문제 수정, 덕트 직사각형 틀(자르기 경계 틀) 표시, 덕트 길이 수정(블록 자르기 XCLIP 적용), PC 앱(Electron)용 연결, 글자는 도면과 같이 커지고 작아짐(캐드 방식)으로 되돌림, 휠 확대 버그 수정, 편집(이동·복사)·캐드 단축키·글자 크기 고정·휠 확대 15%·축척 표시" style="margin-left:8px;font-size:11px;color:var(--text-muted);font-weight:400;white-space:nowrap">v1.14 · 11-28 22:15</small>
         </div>
 
         <input type="file" id="fileInput" accept=".dwg,.dxf,.stl,.obj" style="display: none;">
@@ -1944,9 +1944,27 @@
       if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !/[?&]app=1(&|$)/.test(location.search)) {
         navigator.serviceWorker.register('sw.js').catch((e) => console.warn('[서비스 워커 등록 실패]', e && e.message));
       }
-      let installEvt = null;
+      let installEvt = null, installSeen = false;
+      // 설치 진단(버전 글자를 누르면 뜸): 폰에서 '앱 설치' 가 안 보일 때 어디서 막히는지 본다.
+      window.cadDiag = async () => {
+        const L = [];
+        L.push('주소: ' + location.href);
+        L.push('보안 연결(HTTPS): ' + (window.isSecureContext ? '예' : '아니오'));
+        L.push('독립 창으로 실행 중: ' + ((window.matchMedia && matchMedia('(display-mode: standalone)').matches) ? '예(설치된 앱)' : '아니오(브라우저 탭)'));
+        try { const r = await fetch('manifest.webmanifest', { cache: 'no-store' }); const j = await r.json(); L.push('매니페스트: ' + r.status + ' · 이름 ' + j.name + ' · 아이콘 ' + (j.icons || []).length + '개'); } catch (e) { L.push('매니페스트: 못 읽음 ' + (e && e.message)); }
+        try {
+          const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+          L.push('서비스 워커: ' + (reg ? ((reg.active && reg.active.state) || (reg.installing && '설치 중') || (reg.waiting && '대기')) : '등록 안 됨') + (navigator.serviceWorker && navigator.serviceWorker.controller ? ' · 이 화면을 제어 중' : ' · 이 화면은 아직 제어 전(한 번 새로고침)'));
+        } catch (e) { L.push('서비스 워커: 확인 실패 ' + (e && e.message)); }
+        L.push('설치 가능 신호(beforeinstallprompt): ' + (installSeen ? '받음 → 크롬 메뉴에 "앱 설치"가 있어야 함' : '아직 못 받음'));
+        L.push('데스크톱 사이트 모드 의심: ' + (/Android/i.test(navigator.userAgent) ? '아니오' : '예(폰인데 안드로이드 표시가 없으면 메뉴의 데스크톱 사이트를 끄세요)'));
+        L.push('브라우저: ' + navigator.userAgent.slice(0, 110));
+        return L.join('\n');
+      };
+      const verEl = document.getElementById('appVersion');
+      if (verEl) { verEl.style.cursor = 'pointer'; verEl.addEventListener('click', async () => { alert('CAD 뷰어 설치 진단\n\n' + await window.cadDiag()); }); }
       const installBtn = document.getElementById('installBtn');
-      window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; if (installBtn) installBtn.style.display = ''; });
+      window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; installSeen = true; if (installBtn) installBtn.style.display = ''; });
       window.addEventListener('appinstalled', () => { installEvt = null; if (installBtn) installBtn.style.display = 'none'; });
       if (installBtn) installBtn.addEventListener('click', async () => { if (!installEvt) return; installEvt.prompt(); try { await installEvt.userChoice; } catch (e) {} installEvt = null; installBtn.style.display = 'none'; });
     });

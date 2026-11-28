@@ -87,6 +87,8 @@ async def main():
             check("공유한 도면이 저절로 열림", opened)
             left = await ev("caches.open('cadviewer-shared').then(c=>c.keys()).then(k=>k.length)")
             check("열고 나면 임시로 맡아 둔 파일은 지워짐", left == 0, left)
+            diag = await ev("window.cadDiag()")
+            check("설치 진단 글(버전 글자를 누르면 뜸)에 매니페스트·서비스 워커·설치 신호가 나옴", '매니페스트: 200' in diag and '서비스 워커' in diag and '설치 가능 신호' in diag, diag.replace(chr(10), ' | ')[:160])
             shown = False
             for _ in range(10):                      # 크롬이 '설치할 수 있는 앱'으로 인정하면 beforeinstallprompt 가 와서 설치 단추가 나타난다
                 if (await ev("getComputedStyle(document.getElementById('installBtn')).display")) != 'none':
