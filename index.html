@@ -387,7 +387,7 @@
           <svg viewBox="0 0 24 24"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.2L19.5 8 12 11.8 4.5 8 12 4.2zM4 9.5l7 3.5v7l-7-3.5v-7zm9 10.5v-7l7-3.5v7l-7 3.5z"/></svg>
           <span>CAD 뷰어</span>
           <!-- 버전 표시: 고칠 때마다 번호·시각을 올린다(예전 화면이 캐시로 남았는지 바로 알아보려는 용도) -->
-          <small id="appVersion" title="빌드 2026-11-28 19:25 — 편집(이동·복사)·캐드 단축키·글자 크기 고정·휠 확대 15%·축척 표시" style="margin-left:8px;font-size:11px;color:var(--text-muted);font-weight:400;white-space:nowrap">v1.5 · 11-28 19:25</small>
+          <small id="appVersion" title="빌드 2026-11-28 20:05 — 휠 확대가 10배쯤에서 멈추던 버그 수정, 편집(이동·복사)·캐드 단축키·글자 크기 고정·휠 확대 15%·축척 표시" style="margin-left:8px;font-size:11px;color:var(--text-muted);font-weight:400;white-space:nowrap">v1.6 · 11-28 20:05</small>
         </div>
 
         <input type="file" id="fileInput" accept=".dwg,.dxf,.stl,.obj" style="display: none;">
@@ -573,7 +573,15 @@
         this.renderer.domElement.addEventListener('touchstart', () => { this.controls.zoomSpeed = 1; }, { capture: true, passive: true });
         // 확대·축소·이동할 때마다 카메라의 가까운/먼 면을 현재 거리에 맞춘다.
         // (전체 보기 때 한 번만 정하면 약 100배 이상 확대할 때 도면이 가까운 면에 잘려 사라진다: 2026-11-21 시험으로 재현·수정)
-        this.controls.addEventListener('change', () => this.updateClipPlanes());
+        this.controls.addEventListener('change', () => {
+          // 2D 도면은 늘 z=0 평면을 똑바로 내려다본다. 커서 위치로 확대(zoomToCursor)할 때 목표점이 매번 조금씩 평면 위로 떠올라,
+          // 카메라와 목표점 사이 거리만 줄고 실제 평면까지의 높이는 그대로여서 약 10배쯤에서 확대가 멈춘 것처럼 되던 버그(2026-11-28 재현·수정).
+          if (this.is2DMode && this.lite) {
+            const t = this.controls.target;
+            if (Math.abs(t.z) > 1e-9) t.z = 0;
+          }
+          this.updateClipPlanes();
+        });
 
         // 조명 구성 (3D 모델용)
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
