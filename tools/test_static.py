@@ -91,6 +91,22 @@ async def main():
             check("화면에 도면이 그려짐(배경과 다른 픽셀 많음)", nonbg > 5000, nonbg)
             mem = await ev("(()=>{const m=performance.memory;return m?Math.round(m.usedJSHeapSize/1e6):null})()")
             print("        JS 메모리(MB):", mem)
+            # 같은 파일을 다시 열면 브라우저 캐시(IndexedDB)로 변환 없이 바로 열려야 한다
+            await ev("document.getElementById('status-stats').textContent = ''; window.cadViewer.app.lastConvertCached = false")
+            t1 = time.time()
+            if SAMPLE:
+                await ev("(()=>{const s=document.querySelector('select');s.value=%s;s.dispatchEvent(new Event('change'));})()" % json.dumps(SAMPLE))
+            else:
+                await send('DOM.setFileInputFiles', {'files': [DWG], 'nodeId': node['nodeId']})
+            st2 = ''
+            for _ in range(400):
+                await asyncio.sleep(0.5)
+                st2 = await ev("document.getElementById('status-stats').textContent")
+                if '선분' in (st2 or ''):
+                    break
+            took2 = time.time() - t1
+            hit = await ev("window.cadViewer.app.lastConvertCached")
+            check("다시 열기는 브라우저 캐시를 씀(변환 없음)", hit is True and '선분' in (st2 or ''), f"{took2:.1f}초 (처음 {took:.1f}초) 캐시={hit}")
     finally:
         proc.terminate(); srv and srv.terminate(); await asyncio.sleep(1)
         shutil.rmtree(prof, ignore_errors=True)

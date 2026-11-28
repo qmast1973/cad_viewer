@@ -643,7 +643,7 @@
           // 2D 모드: 마우스 좌클릭도 이동(Pan), 마우스 회전 비활성화
           this.controls.mouseButtons = {
             LEFT: THREE.MOUSE.PAN,
-            MIDDLE: THREE.MOUSE.DOLLY,
+            MIDDLE: THREE.MOUSE.PAN,        // 캐드(AutoCAD)처럼 휠 버튼을 누르고 끌면 이동
             RIGHT: THREE.MOUSE.ROTATE
           };
           this.controls.touches = {
@@ -692,13 +692,29 @@
       initEvents() {
         // 파일 선택
         const fileInput = document.getElementById('fileInput');
-        document.getElementById('openBtn').addEventListener('click', () => fileInput.click());
+        /* 파일 열기: 지원하는 확장자(DWG·DXF·STL·OBJ)만 보이는 선택창(모든 파일 항목 없음). 지원 안 하는 브라우저는 일반 선택창. */
+        document.getElementById('openBtn').addEventListener('click', async () => {
+          if (window.showOpenFilePicker) {
+            try {
+              const [fh] = await window.showOpenFilePicker({
+                multiple: false, excludeAcceptAllOption: true,
+                types: [{ description: 'CAD 도면·모델 (DWG, DXF, STL, OBJ)', accept: { 'application/acad': ['.dwg'], 'application/dxf': ['.dxf'], 'model/stl': ['.stl'], 'text/plain': ['.obj'] } }]
+              });
+              this.loadFile(await fh.getFile());
+            } catch (e) { if (!e || e.name !== 'AbortError') fileInput.click(); }
+            return;
+          }
+          fileInput.click();
+        });
         fileInput.addEventListener('change', (e) => {
           if (e.target.files.length > 0) {
             this.loadFile(e.target.files[0]);
             e.target.value = '';   // 같은 파일을 다시 골라도 열리도록 비움
           }
         });
+
+        // 캐드 방식: 휠 버튼 더블클릭 = 전체 보기(Zoom Extents), 휠 버튼 누름의 자동 스크롤 막기
+        this.renderer.domElement.addEventListener('mousedown', (e) => { if (e.button === 1) { e.preventDefault(); if (e.detail === 2) this.fitToScreen(); } });
 
         // 샘플 드롭다운
         const sampleSelect = document.getElementById('sampleSelect');
@@ -811,25 +827,62 @@
       /* DWG → cadlite: 브라우저 안의 wasm 변환기(작업자)로 바꾼다. 서버가 없어도(깃허브 페이지·폰) 열리고, 다 쓰면 작업자를 끝내 메모리를 돌려준다.
          wasm 을 못 쓰는 환경이면 로컬 서버(/api/dwg-lite)로 다시 시도한다. */
       convertDwg(arrayBuf, name, isDxf) {
-        const viaWasm = () => new Promise((resolve, reject) => {
+        this.srcBuf = arrayBuf.slice(0); this.srcType = isDxf ? 'dxf' : 'dwg';     // 편집(이동·복사)용 원본 사본
+        const ENGINE = 'v5';                    // 변환기를 바꾸면 올려서 옛 캐시를 버린다
+        const viaWasm = (buf0) => new Promise((resolve, reject) => {
           if (typeof Worker === 'undefined' || typeof WebAssembly === 'undefined') return reject(new Error('이 브라우저는 wasm 을 지원하지 않음'));
           let w;
           try { w = new Worker('dwg-worker.js'); } catch (e) { return reject(e); }
           const done = (fn, v) => { try { w.terminate(); } catch (e) {} fn(v); };
           w.onmessage = (ev) => ev.data.ok ? done(resolve, ev.data.buf) : done(reject, new Error(ev.data.error));
           w.onerror = (ev) => done(reject, new Error(ev.message || '변환 작업자 오류'));
-          w.postMessage({ buf: arrayBuf, name, dxf: !!isDxf }, [arrayBuf]);
+          w.postMessage({ buf: buf0, name, dxf: !!isDxf }, [buf0]);
         });
         const viaServer = async (buf) => {
           const res = await fetch('/api/dwg-lite' + (isDxf ? '?type=dxf' : ''), { method: 'POST', body: buf });
           if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || `서버 변환 응답 실패 (${res.status})`); }
           return res.arrayBuffer();
         };
-        const keep = arrayBuf.slice(0);          // 작업자로 넘기면 원본이 비므로 서버 재시도용 사본(약 30MB)
-        return viaWasm().catch((e1) => {
-          console.warn('[wasm 변환 실패 → 서버 방식 시도]', e1.message);
-          return viaServer(keep).catch((e2) => { throw new Error(`브라우저 변환 실패: ${e1.message} / 서버 변환 실패: ${e2.message}`); });
+        /* 변환 결과 캐시(브라우저 IndexedDB): 같은 파일 내용이면 다시 변환하지 않는다. 최근 3개만 보관, 안 되는 환경(시크릿 창 등)에서는 조용히 건너뜀. */
+        const db = () => new Promise((res, rej) => {
+          try { const r = indexedDB.open('cadviewer-cache', 1); r.onupgradeneeded = () => r.result.createObjectStore('c'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); }
         });
+        const tx = (d, mode, fn) => new Promise((res, rej) => { const t = d.transaction('c', mode); const q = fn(t.objectStore('c')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); });
+        const hashKey = async () => {
+          const h = new Uint8Array(await crypto.subtle.digest('SHA-256', arrayBuf));
+          return ENGINE + (isDxf ? 'x' : 'd') + ':' + Array.from(h, b => b.toString(16).padStart(2, '0')).join('');
+        };
+        let key = null;
+        const cacheGet = async () => {
+          try { key = await hashKey(); const d = await db(); const v = await tx(d, 'readonly', st => st.get(key)); d.close(); return v ? v.buf : null; } catch (e) { return null; }
+        };
+        const cachePut = async (buf) => {
+          try {
+            if (!key) return; const d = await db();
+            await tx(d, 'readwrite', st => st.put({ buf, t: Date.now() }, key));
+            const all = await tx(d, 'readonly', st => st.getAllKeys());
+            if (all.length > 3) {                                  // 오래된 것부터 지움
+              const rows = [];
+              for (const k of all) rows.push([k, (await tx(d, 'readonly', st => st.get(k))).t]);
+              rows.sort((x, y) => x[1] - y[1]);
+              for (const [k] of rows.slice(0, rows.length - 3)) await tx(d, 'readwrite', st => st.delete(k));
+            }
+            d.close();
+          } catch (e) { console.warn('[변환 캐시 저장 실패]', e && e.message); }
+        };
+        /* 경과 시간 표시: 큰 도면 변환이 멈춘 것처럼 보이지 않게 */
+        const t0 = Date.now(); const label = document.getElementById('loading-text'); const base = label ? label.textContent.replace(/ \(\d+초 경과\)$/, '') : '';
+        const tick = setInterval(() => { if (label) label.textContent = `${base} (${Math.round((Date.now() - t0) / 1000)}초 경과)`; }, 1000);
+        const stop = () => clearInterval(tick);
+        const local = /^(127\.0\.0\.1|localhost)$/.test(location.hostname);    // PC 에서 로컬 서버로 열었으면 서버가 훨씬 빠름(캐시 포함)
+        this.lastConvertCached = false;
+        return cacheGet().then(hit => {
+          if (hit) { console.info('[변환 캐시 사용]'); this.lastConvertCached = true; return hit; }
+          const keep = arrayBuf.slice(0);
+          const first = local ? () => viaServer(keep).catch((e1) => { console.warn('[서버 변환 실패 → 브라우저 wasm]', e1.message); return viaWasm(arrayBuf).catch((e2) => { throw new Error(`서버 변환 실패: ${e1.message} / 브라우저 변환 실패: ${e2.message}`); }); })
+                            : () => viaWasm(keep).catch((e1) => { console.warn('[wasm 변환 실패 → 서버 방식 시도]', e1.message); return viaServer(arrayBuf).catch((e2) => { throw new Error(`브라우저 변환 실패: ${e1.message} / 서버 변환 실패: ${e2.message}`); }); });
+          return first().then(async (out) => { await cachePut(out.slice(0)); return out; });
+        }).then(v => { stop(); return v; }, e => { stop(); throw e; });
       }
 
       loadFile(file) {

@@ -192,6 +192,7 @@
     function onClick(px, py) {
       if (!T.tool || !isLite()) return;
       const { p } = pickPoint(px, py, true);
+      if (T.tool === 'edit') { editClick(p); T.dirty = true; return; }
       if (T.tool === 'dist') {
         T.pts.push(p);
         if (T.pts.length === 2) { measureDist(absOf(T.pts[0]), absOf(T.pts[1])); T.pts = []; T.hover = null; }
@@ -199,6 +200,86 @@
       else if (T.tool === 'coord') coordAt(absOf(p));
       T.dirty = true; renderPanel();
     }
+
+
+    // ── 부품(블록) 이동·복사 편집 (이 PC 서버 필요: 원본은 그대로, 결과는 '저장/' 폴더의 새 DXF) ──
+    const E = { ready: false, busy: '', sel: null, ops: [], step: 'idle', op: null, base: null, hover: null, saved: null, msg: '편집을 시작하려면 [편집 준비]를 누르세요', info: null };
+    const localServer = () => /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+    async function api(cmd, body, raw, qs) {
+      const r = await fetch('/api/edit/' + cmd + (qs || ''), { method: 'POST', body: raw ? body : JSON.stringify(body || {}) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) throw new Error(j.error || ('서버 응답 ' + r.status));
+      return j;
+    }
+    function setMsg(m) { E.msg = m; if (panelKind === 'edit') renderPanel(); T.dirty = true; }
+    async function editOpen() {
+      if (!isLite()) { setMsg('먼저 도면(DWG·DXF)을 여세요'); return false; }
+      if (!localServer()) { setMsg('편집은 이 PC 의 로컬 서버(start-viewer.bat)로 열었을 때만 됩니다'); return false; }
+      if (!app.srcBuf) { setMsg('원본 파일을 다시 열어 주세요(원본 사본 없음)'); return false; }
+      if (E.busy) return false;
+      E.ready = false; E.sel = null; E.ops = []; E.saved = null; E.step = 'idle'; E.busy = '편집 준비 중(큰 도면은 몇 분 걸립니다)';
+      const t0 = Date.now(); const tk = setInterval(() => { E.msg = `${E.busy}… ${Math.round((Date.now() - t0) / 1000)}초`; if (panelKind === 'edit') renderPanel(); }, 1000);
+      try {
+        const j = await api('open', app.srcBuf.slice(0), true, `?type=${app.srcType || 'dwg'}&name=${encodeURIComponent(app.currentFilename || 'drawing')}`);
+        E.ready = true; E.info = j; E.step = 'select'; E.op = null;
+        setMsg(`편집 준비 끝: 부품(블록 삽입) ${j.inserts.toLocaleString()}개 (${j.seconds}초). 부품을 눌러 고르세요`);
+        return true;
+      } catch (e) { setMsg('편집 준비 실패: ' + e.message); return false; }
+      finally { clearInterval(tk); E.busy = ''; renderPanel(); }
+    }
+    async function editPick(abs) {
+      if (!E.ready) { setMsg('먼저 [편집 준비]'); return null; }
+      const tol = 3 / pxPerUnit();
+      try {
+        const j = await api('pick', { x: abs[0], y: abs[1], tol });
+        if (!j.found) { setMsg('그 자리에 부품이 없습니다. 다른 곳을 누르세요'); return null; }
+        E.sel = j.found; const b = j.found.bbox;
+        setMsg(`선택: ${j.found.name} (도면층 ${j.found.layer}, 크기 ${fmt(b[2] - b[0])}×${fmt(b[3] - b[1])})`); T.dirty = true; return E.sel;
+      } catch (e) { setMsg('선택 실패: ' + e.message); return null; }
+    }
+    function editApply(op, dx, dy) {
+      if (!E.sel) { setMsg('먼저 부품을 고르세요'); return false; }
+      if (!isFinite(dx) || !isFinite(dy)) { setMsg('거리 값이 올바르지 않습니다'); return false; }
+      E.ops.push({ op, handle: E.sel.handle, name: E.sel.name, dx, dy, polys: E.sel.polys, bbox: E.sel.bbox });
+      E.saved = null; setMsg(`${op === 'move' ? '이동' : '복사'} ΔX ${fmt(dx)}, ΔY ${fmt(dy)} (${E.ops.length}건, 저장 전까지 파일은 안 바뀝니다)`); T.dirty = true; return true;
+    }
+    function editUndo() { const o = E.ops.pop(); setMsg(o ? `되돌림: ${o.op === 'move' ? '이동' : '복사'} ${o.name}` : '되돌릴 것이 없습니다'); T.dirty = true; return !!o; }
+    async function editSave(fmt) {
+      fmt = fmt === 'dwg' || fmt === 'dxf' ? fmt : ((app.srcType === 'dxf') ? 'dxf' : 'dwg');      // 지정이 없으면 원본과 같은 형식으로
+      if (!E.ops.length) { setMsg('저장할 변경이 없습니다'); return null; }
+      if (E.busy) return null;
+      E.busy = '저장 중(큰 도면은 1분 정도)'; renderPanel();
+      try {
+        const j = await api('save', { ops: E.ops.map((o) => ({ op: o.op, handle: o.handle, dx: o.dx, dy: o.dy })), format: fmt, stem: (app.currentFilename || 'drawing').replace(/\.[^.]+$/, '') });
+        E.saved = j; setMsg(`저장함: ${j.path} (이동 ${j.moves}·복사 ${j.copies})`); return j;
+      } catch (e) { setMsg('저장 실패: ' + e.message); return null; }
+      finally { E.busy = ''; renderPanel(); }
+    }
+    function startOp(op) {
+      if (!isLite()) { toast('도면을 먼저 여세요'); return; }
+      if (T.tool !== 'edit') setTool('edit');
+      E.op = op;
+      if (!E.ready) { setMsg('편집 준비 중입니다… 끝나면 다시 ' + (op === 'move' ? 'M' : 'CO') + ' 를 입력하세요'); if (!E.busy) editOpen(); return; }
+      if (!E.sel) { E.step = 'select'; setMsg(`${op === 'move' ? '이동' : '복사'}할 부품을 누르세요`); }
+      else { E.step = 'base'; setMsg('기준점을 누르세요(끝점에 자동으로 붙습니다)'); }
+      T.dirty = true;
+    }
+    async function editClick(p) {
+      const a = absOf(p);
+      if (E.step === 'select' || !E.sel) {
+        const s = await editPick(a);
+        if (s && E.op) { E.step = 'base'; setMsg(`선택: ${s.name} — 기준점을 누르세요`); }
+        return;
+      }
+      if (E.step === 'base') { E.base = p; E.step = 'target'; setMsg('목표점을 누르세요 (복사는 계속 누르면 여러 개, Enter/Esc 로 끝)'); return; }
+      if (E.step === 'target' && E.base) {
+        const dx = p[0] - E.base[0], dy = p[1] - E.base[1];
+        if (editApply(E.op, dx, dy)) {
+          if (E.op === 'move') { E.step = 'select'; E.sel = null; E.op = null; E.base = null; E.hover = null; }
+        }
+      }
+    }
+    function editEnd() { E.step = E.ready ? 'select' : 'idle'; E.op = null; E.base = null; E.hover = null; E.sel = null; T.dirty = true; renderPanel(); }
 
     // ── 마우스: 휠은 커서 위치 기준으로 확대·축소, 아래 상태줄에 커서의 도면 좌표를 실시간 표시 ──
     app.controls.zoomToCursor = true;
@@ -225,9 +306,10 @@
     canvas.addEventListener('pointerup', (e) => {
       if (!down || e.pointerId !== down.id) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); const btn = down.t; down = null;
-      if (moved < 6 && btn === 0 && ['dist', 'area', 'coord'].includes(T.tool)) { const r = canvas.getBoundingClientRect(); onClick(e.clientX - r.left, e.clientY - r.top); }
+      if (moved < 6 && btn === 0 && ['dist', 'area', 'coord', 'edit'].includes(T.tool)) { const r = canvas.getBoundingClientRect(); onClick(e.clientX - r.left, e.clientY - r.top); }
     });
     canvas.addEventListener('pointermove', (e) => {
+      if (T.tool === 'edit' && E.step === 'target' && isLite()) { const nw = performance.now(); if (nw - lastHover < 50) return; lastHover = nw; const rr = canvas.getBoundingClientRect(); E.hover = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false).p; T.dirty = true; return; }
       if (!['dist', 'area'].includes(T.tool) || !T.pts.length || !isLite()) return;
       const now = performance.now(); if (now - lastHover < 70) return; lastHover = now;
       const r = canvas.getBoundingClientRect(); T.hover = pickPoint(e.clientX - r.left, e.clientY - r.top, false).p; T.dirty = true;
@@ -246,7 +328,8 @@
     });
     window.addEventListener('keydown', (e) => {
       if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) { if (e.key === 'Escape') e.target.blur(); return; }
-      if (e.key === 'Escape') { T.pts = []; T.hover = null; setTool(null); T.dirty = true; }
+      if (e.key === 'Escape') { if (T.tool === 'edit' && (E.op || E.sel)) { editEnd(); } else { T.pts = []; T.hover = null; setTool(null); T.dirty = true; } }
+      else if (e.key === 'Enter' && T.tool === 'edit' && (E.op || E.sel)) { editEnd(); }
       else if (e.key === 'Enter' && T.tool === 'area') { finishArea(); renderPanel(); }
       else if (e.key === 'Backspace' && T.pts.length) { T.pts.pop(); T.dirty = true; renderPanel(); }
     });
@@ -294,6 +377,29 @@
         const pts = T.hover ? T.pts.concat([T.hover]) : T.pts; drawPts(pts, '#ffffff', false, false);
         if (T.hover && T.tool === 'dist') { const a = T.pts[T.pts.length - 1]; const [x, y] = w2s((a[0] + T.hover[0]) / 2, (a[1] + T.hover[1]) / 2); label(ctx, x, y, fmt(dist2(a, T.hover))); }
         if (T.hover && T.tool === 'area' && T.pts.length >= 2) { const [x, y] = w2s(T.hover[0], T.hover[1]); label(ctx, x, y - 6, fmt(polyArea(pts))); }
+      }
+
+      // 편집: 선택한 부품(노랑), 이동 전 자리(빨간 점선 상자)·이동/복사 결과(주황/초록), 이동 미리보기(흰색)
+      if (T.tool === 'edit' || E.ops.length || E.sel) {
+        const o = origin();
+        const strokePolys = (polys, dx, dy, color, width, dash) => {
+          ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.beginPath(); let n = 0;
+          for (const pl of polys) { for (let i = 0; i < pl.length; i++) { const [x, y] = w2s(pl[i][0] - o[0] + dx, pl[i][1] - o[1] + dy); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); n++; } if (n > 20000) break; }
+          ctx.stroke(); ctx.setLineDash([]);
+        };
+        const box = (b, dx, dy, color) => { const [x0, y0] = w2s(b[0] - o[0] + dx, b[3] - o[1] + dy), [x1, y1] = w2s(b[2] - o[0] + dx, b[1] - o[1] + dy); ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.strokeRect(x0, y0, x1 - x0, y1 - y0); ctx.setLineDash([]); };
+        E.ops.forEach((op) => {
+          if (op.op === 'move') box(op.bbox, 0, 0, '#ff4d4d');
+          strokePolys(op.polys, op.dx, op.dy, op.op === 'move' ? '#ff9f1a' : '#3ddc84', 2);
+        });
+        if (E.sel) { strokePolys(E.sel.polys, 0, 0, '#ffe14d', 2); box(E.sel.bbox, 0, 0, '#ffe14d'); }
+        if (E.sel && E.step === 'target' && E.base && E.hover) {
+          const dx = E.hover[0] - E.base[0], dy = E.hover[1] - E.base[1];
+          strokePolys(E.sel.polys, dx, dy, '#ffffff', 1.5, [4, 3]);
+          const [bx, by] = w2s(E.base[0], E.base[1]), [hx, hy] = w2s(E.hover[0], E.hover[1]);
+          ctx.strokeStyle = '#ffffff'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(hx, hy); ctx.stroke(); ctx.setLineDash([]);
+          label(ctx, hx, hy, `ΔX ${fmt(dx)}  ΔY ${fmt(dy)}`);
+        }
       }
       if (zw) { ctx.strokeStyle = '#4da3ff'; ctx.fillStyle = 'rgba(77,163,255,.15)'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); const x = Math.min(zw.x0, zw.x1), y = Math.min(zw.y0, zw.y1), w = Math.abs(zw.x1 - zw.x0), h = Math.abs(zw.y1 - zw.y0); ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h); ctx.setLineDash([]); }
     }
@@ -352,7 +458,7 @@
     // ── 패널 UI ──
     const bar = document.createElement('div'); bar.className = 'floating-tools';
     const defs = [['find', '찾기', '글자 찾기'], ['dist', '거리', '두 점 거리 (끝점 자동 맞춤)'], ['area', '면적', '여러 점으로 면적·둘레 (Enter/더블클릭 완료)'], ['coord', '좌표', '점 좌표 보기'],
-      ['zoomwin', '영역', '끌어서 영역 확대'], ['prev', '이전', '이전 보기'], ['font', '글꼴', '글자 표시·글꼴 설정'], ['png', 'PNG', '지금 화면을 PNG로 저장']];
+      ['edit', '편집', '부품 이동(M)·복사(CO) — 원본은 그대로, 새 DXF 로 저장'], ['zoomwin', '영역', '끌어서 영역 확대'], ['prev', '이전', '이전 보기'], ['font', '글꼴', '글자 표시·글꼴 설정'], ['png', 'PNG', '지금 화면을 PNG로 저장']];
     const btns = {};
     defs.forEach(([k, txt, tip]) => { const b = document.createElement('button'); b.className = 'btn'; b.textContent = txt; b.title = tip; b.dataset.k = k; bar.appendChild(b); btns[k] = b; });
     view.appendChild(bar);
@@ -365,7 +471,8 @@
       Object.keys(btns).forEach((k) => btns[k].classList.toggle('active', k === T.tool || (k === panelKind && panel.classList.contains('open'))));
       canvas.style.cursor = T.tool ? 'crosshair' : '';
       if (['dist', 'area', 'coord'].includes(T.tool)) { panelKind = 'measure'; panel.classList.add('open'); }
-      else if (T.tool === null && panelKind === 'measure') panel.classList.remove('open');
+      else if (T.tool === 'edit') { panelKind = 'edit'; panel.classList.add('open'); if (!E.ready && !E.busy && localServer() && isLite()) setTimeout(editOpen, 0); }
+      else if (T.tool === null && (panelKind === 'measure' || panelKind === 'edit')) panel.classList.remove('open');
       renderPanel();
     }
     function openPanel(kind) {
@@ -414,6 +521,26 @@
         if ($('mDone')) $('mDone').onclick = () => { finishArea(); renderPanel(); };
         $('mClear').onclick = () => { T.records = []; T.pts = []; T.hover = null; T.dirty = true; renderPanel(); };
         $('mCsv').onclick = () => downloadCsv();
+      } else if (panelKind === 'edit') {
+        const stepTxt = { idle: '준비 전', select: '부품을 누르세요', base: '기준점을 누르세요', target: '목표점을 누르세요' }[E.step] || '';
+        panel.innerHTML = `<h4>부품 이동·복사 <button class="btn btn-icon-only" id="pClose" style="border:none;height:22px;width:22px">✕</button></h4>
+          <div class="muted" id="eMsg">${esc(E.busy ? E.msg : E.msg)}</div>
+          <div class="muted">단계: ${stepTxt}${E.op ? ' · ' + (E.op === 'move' ? '이동(M)' : '복사(CO)') : ''}</div>
+          <div class="row"><button class="btn" id="eOpen" style="width:auto;padding:0 8px" ${E.busy ? 'disabled' : ''}>${E.ready ? '다시 준비' : '편집 준비'}</button>
+            <button class="btn" id="eMove" style="width:auto;padding:0 8px" ${E.ready ? '' : 'disabled'}>이동 M</button>
+            <button class="btn" id="eCopy" style="width:auto;padding:0 8px" ${E.ready ? '' : 'disabled'}>복사 CO</button></div>
+          <div class="row"><button class="btn" id="eUndo" style="width:auto;padding:0 8px">되돌리기 U</button>
+            <button class="btn" id="eSaveDwg" style="width:auto;padding:0 8px" ${E.ops.length && !E.busy ? '' : 'disabled'}>DWG로 저장 (${E.ops.length}건)</button>
+            <button class="btn" id="eSaveDxf" style="width:auto;padding:0 8px" ${E.ops.length && !E.busy ? '' : 'disabled'}>DXF로 저장</button></div>
+          <div class="row"><input type="text" id="eDx" placeholder="ΔX" style="width:80px"><input type="text" id="eDy" placeholder="ΔY" style="width:80px">
+            <button class="btn" id="eApply" style="width:auto;padding:0 8px" ${E.sel ? '' : 'disabled'}>값으로 ${E.op === 'copy' ? '복사' : '이동'}</button></div>
+          <div class="list">${E.ops.map((o, i) => `<div class="item"><b>${i + 1}</b><span>${o.op === 'move' ? '이동' : '복사'} ${esc(o.name)} (ΔX ${fmt(o.dx)}, ΔY ${fmt(o.dy)})</span></div>`).join('') || '<span class="muted">변경 없음</span>'}</div>
+          ${E.saved ? `<div class="muted">저장됨: ${esc(E.saved.path)}<br><a href="/api/edit/download?f=${encodeURIComponent(E.saved.file)}" style="color:var(--accent-color)">내려받기</a></div>` : ''}
+          <div class="muted">단축키: M 이동 · CO/CP 복사 · U 되돌리기 · Ctrl+S 저장 · Esc 취소. 원본 도면은 고치지 않고 '저장' 폴더에 새 DXF 로 씁니다.</div>`;
+        $('eOpen').onclick = () => editOpen();
+        $('eMove').onclick = () => startOp('move'); $('eCopy').onclick = () => startOp('copy');
+        $('eUndo').onclick = () => editUndo(); $('eSaveDwg').onclick = () => editSave('dwg'); $('eSaveDxf').onclick = () => editSave('dxf');
+        $('eApply').onclick = () => { editApply(E.op === 'copy' ? 'copy' : 'move', parseFloat($('eDx').value), parseFloat($('eDy').value)); if (E.op !== 'copy') { E.sel = null; E.step = 'select'; } renderPanel(); };
       } else if (panelKind === 'font') {
         const fonts = ['"Malgun Gothic", "맑은 고딕"', 'Gulim, 굴림', 'Batang, 바탕', 'Dotum, 돋움', 'Arial, sans-serif', '"Courier New", monospace'];
         panel.innerHTML = `<h4>글자 표시·글꼴 <button class="btn btn-icon-only" id="pClose" style="border:none;height:22px;width:22px">✕</button></h4>
@@ -443,9 +570,75 @@
       a.download = ((app.currentFilename || 'cad').replace(/\.[^.]+$/, '')) + '_측정기록.csv'; document.body.appendChild(a); a.click(); a.remove();
     }
 
+
+    // ── 캐드(AutoCAD) 단축키: 글자를 치면 아래 '명령:' 칸에 들어가고 Enter/Space 로 실행(별칭은 acad.pgp 기본값과 같음) ──
+    const cmdBox = document.createElement('div');
+    cmdBox.style.cssText = 'position:absolute;left:50%;bottom:44px;transform:translateX(-50%);display:none;z-index:14;background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:8px;padding:4px 8px;gap:6px;align-items:center;font-size:13px;backdrop-filter:blur(8px)';
+    cmdBox.innerHTML = '<span style="color:var(--text-muted)" id="cmdPrompt">명령:</span><input type="text" id="cmdline" autocomplete="off" spellcheck="false" style="width:180px;height:26px;border-radius:6px;border:1px solid var(--panel-border);background:var(--btn-bg);color:var(--text-main);padding:0 8px;font-size:13px;user-select:text;text-transform:uppercase">';
+    view.appendChild(cmdBox);
+    const cmdIn = cmdBox.querySelector('#cmdline'), cmdPrompt = cmdBox.querySelector('#cmdPrompt');
+    let cmdMode = null;                                                   // 'zoom' 같은 하위 옵션 대기
+    const hideCmd = () => { cmdBox.style.display = 'none'; cmdIn.value = ''; cmdMode = null; cmdPrompt.textContent = '명령:'; cmdIn.blur(); };
+    const showCmd = (init, prompt) => { cmdBox.style.display = 'flex'; cmdPrompt.textContent = prompt || '명령:'; cmdIn.value = init || ''; cmdIn.focus(); cmdIn.setSelectionRange(cmdIn.value.length, cmdIn.value.length); };
+    function fitAll() { if (typeof app.fitToScreen === 'function') app.fitToScreen(); else if (window.cadViewer && window.cadViewer.fit) window.cadViewer.fit(); T.dirty = true; app.textsDirty = true; }
+    const toolOn = (t) => { if (T.tool !== t) setTool(t); };
+    const CMD = {
+      M: () => startOp('move'), MOVE: () => startOp('move'),
+      CO: () => startOp('copy'), CP: () => startOp('copy'), COPY: () => startOp('copy'),
+      U: () => editUndo(), UNDO: () => editUndo(),
+      SAVE: () => editSave(), QSAVE: () => editSave(), SAVEAS: () => editSave('dxf'), DXFOUT: () => editSave('dxf'),
+      Z: () => { cmdMode = 'zoom'; showCmd('', '줌 [E 전체/W 영역/P 이전/A 전체/배율]:'); }, ZOOM: () => CMD.Z(),
+      ZE: () => fitAll(), ZA: () => fitAll(), ZW: () => toolOn('zoomwin'), ZP: () => prevView(),
+      DI: () => toolOn('dist'), DIST: () => toolOn('dist'), DISTANCE: () => toolOn('dist'),
+      AA: () => toolOn('area'), AREA: () => toolOn('area'),
+      ID: () => toolOn('coord'),
+      P: () => toast('이동(PAN): 왼쪽 버튼 또는 가운데(휠) 버튼을 누른 채 끌기'), PAN: () => CMD.P(),
+      FIND: () => openPanel('find'), FI: () => openPanel('find'),
+      LA: () => { const b = document.getElementById('layerToggleBtn') || document.querySelector('[title*="레이어"], #layerBtn'); if (b) b.click(); }, LAYER: () => CMD.LA(),
+      RE: () => { app.textsDirty = true; T.dirty = true; }, REGEN: () => CMD.RE(), R: () => CMD.RE(), REDRAW: () => CMD.RE(),
+      OP: () => { const b = document.getElementById('openBtn'); if (b) b.click(); }, OPEN: () => CMD.OP(),
+      PNG: () => exportPng(true), EXPORT: () => exportPng(true),
+      GRID: () => { const g = document.getElementById('gridBtn'); if (g) g.click(); },
+      E: () => toast('삭제(ERASE)는 아직 지원하지 않습니다'), ERASE: () => CMD.E(), TR: () => toast('이 명령은 아직 지원하지 않습니다'), L: () => toast('그리기 명령은 지원하지 않습니다(보기·측정·이동·복사만)'), LINE: () => CMD.L(),
+      ESC: () => editEnd()
+    };
+    function runCmd(txt) {
+      const c = (txt || '').trim().toUpperCase();
+      if (cmdMode === 'zoom') {
+        cmdMode = null;
+        if (c === '' || c === 'W') toolOn('zoomwin');
+        else if (c === 'E' || c === 'A') fitAll();
+        else if (c === 'P') prevView();
+        else if (/^\d+(\.\d+)?X?$/.test(c)) { const f = parseFloat(c); if (f > 0 && window.cadViewer) window.cadViewer.zoom(f); }
+        else toast('알 수 없는 줌 옵션: ' + c);
+        return;
+      }
+      if (!c) { if (T.tool === 'edit' && (E.op || E.sel)) editEnd(); return; }
+      const f = CMD[c];
+      if (f) f(); else toast(`알 수 없는 명령: ${c}`);
+    }
+    cmdIn.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const v = cmdIn.value; const keep = cmdMode === 'zoom'; hideCmd(); if (keep) cmdMode = 'zoom'; runCmd(v); }
+      else if (e.key === 'Escape') { e.preventDefault(); hideCmd(); }
+    });
+    cmdIn.addEventListener('blur', () => { setTimeout(() => { if (document.activeElement !== cmdIn && !cmdMode) cmdBox.style.display = 'none'; }, 150); });
+    window.addEventListener('keydown', (e) => {
+      if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+      if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+        if (e.key === 'z' || e.key === 'Z') { e.preventDefault(); editUndo(); }
+        else if (e.key === 's' || e.key === 'S') { e.preventDefault(); editSave(); }
+        return;
+      }
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === 'F7') { e.preventDefault(); CMD.GRID(); return; }
+      if (e.key === 'Delete') { return; }
+      if (/^[a-zA-Z0-9]$/.test(e.key)) { e.preventDefault(); showCmd(e.key.toUpperCase()); }
+    });
+
     // 도면을 새로 열면 찾기·측정 기록을 비움
     const origRender = app.renderLite.bind(app);
-    app.renderLite = function (buf, name) { T.find = { q: '', opts: T.find.opts, res: [], cur: -1 }; T.records = []; T.pts = []; T.hover = null; T.views = []; isolated = null; const r = origRender(buf, name); T.dirty = true; renderPanel(); return r; };
+    app.renderLite = function (buf, name) { T.find = { q: '', opts: T.find.opts, res: [], cur: -1 }; E.ready = false; E.sel = null; E.ops = []; E.step = 'idle'; E.op = null; E.base = null; E.hover = null; E.saved = null; E.msg = '편집을 시작하려면 [편집 준비]를 누르세요'; T.records = []; T.pts = []; T.hover = null; T.views = []; isolated = null; const r = origRender(buf, name); T.dirty = true; renderPanel(); return r; };
 
     // 에이전트용 조작 (window.cadTools)
     window.cadTools = {
@@ -455,6 +648,9 @@
       records: () => T.records.map((r) => ({ type: r.type, value: r.value, dx: r.dx, dy: r.dy, angle: r.angle, perimeter: r.perimeter, x: r.x, y: r.y })), clearRecords: () => { T.records = []; T.dirty = true; renderPanel(); },
       csv: () => csvText(), setTool: (t) => { T.tool = null; setTool(t); return T.tool; },
       zoomWindow: (x1, y1, x2, y2) => { const o = origin(); zoomWindow(x1 - o[0], y1 - o[1], x2 - o[0], y2 - o[1]); }, prevView, isolateLayer, setLayerTransparency, setFont,
+      edit: { open: editOpen, pick: async (x, y) => { const s = await editPick([x, y]); return s && { handle: s.handle, name: s.name, layer: s.layer, bbox: s.bbox }; }, move: (dx, dy) => editApply('move', dx, dy), copy: (dx, dy) => editApply('copy', dx, dy), undo: editUndo, save: editSave,
+        ops: () => E.ops.map((o) => ({ op: o.op, handle: o.handle, name: o.name, dx: o.dx, dy: o.dy })), state: () => ({ ready: E.ready, busy: E.busy, step: E.step, op: E.op, selected: E.sel && E.sel.name, ops: E.ops.length, saved: E.saved, msg: E.msg }), clearSel: () => { E.sel = null; T.dirty = true; } },
+      command: (t) => runCmd(t),
       exportPng: () => exportPng(false), downloadPng: () => exportPng(true), openPanel, state: () => ({ tool: T.tool, finds: T.find.res.length, records: T.records.length, views: T.views.length, panel: panelKind })
     };
     app.updateLayerPanel();

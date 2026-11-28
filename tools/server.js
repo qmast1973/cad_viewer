@@ -6,6 +6,35 @@ const { execFile } = require('child_process');
 const crypto = require('crypto');
 const { convert: convertLite } = require('./dwg_lite');
 
+
+// 편집 서버(Rust: bin/dwg2lite.exe --edit-server): 한 줄 명령 → 한 줄 JSON. 도면을 메모리에 들고 있어서 한 번 띄워 계속 쓴다. 요청은 차례로 처리한다.
+const { spawn } = require('child_process');
+let editProc = null, editBuf = '', editChain = Promise.resolve();
+const editWaiters = [];
+function editStart() {
+  if (editProc && !editProc.killed && editProc.exitCode === null) return;
+  const exe = path.join(__dirname, '..', 'bin', 'dwg2lite.exe');
+  if (!fs.existsSync(exe)) throw new Error('bin/dwg2lite.exe 가 없습니다(편집 기능에 필요)');
+  editProc = spawn(exe, ['--edit-server'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  editBuf = '';
+  editProc.stdout.setEncoding('utf8');
+  editProc.stdout.on('data', (d) => {
+    editBuf += d; let i;
+    while ((i = editBuf.indexOf('\n')) >= 0) {
+      const line = editBuf.slice(0, i); editBuf = editBuf.slice(i + 1);
+      const w = editWaiters.shift();
+      if (w) { try { w(JSON.parse(line)); } catch (e) { w({ ok: false, error: '편집 서버 응답 오류' }); } }
+    }
+  });
+  editProc.stderr.on('data', (d) => console.error('[edit-server]', String(d).slice(0, 300)));
+  editProc.on('exit', () => { editProc = null; while (editWaiters.length) editWaiters.shift()({ ok: false, error: '편집 서버가 종료됨' }); });
+}
+function editLine(line) {                  // 한 줄 보내고 한 줄 답 받기(앞선 요청이 끝난 뒤에)
+  const run = () => new Promise((resolve) => { try { editStart(); } catch (e) { return resolve({ ok: false, error: e.message }); } editWaiters.push(resolve); editProc.stdin.write(line + '\n'); });
+  const p = editChain.then(run, run); editChain = p.catch(() => {}); return p;
+}
+process.on('exit', () => { try { editProc && editProc.kill(); } catch (e) {} });
+
 const PORT = 8795;
 const BASE_DIR = path.resolve(__dirname, '..');
 const CONVERT_SCRIPT = path.join(__dirname, 'convert_cli.js');
@@ -131,6 +160,78 @@ const server = http.createServer(async (req, res) => {
       } finally {
         if (tempDwg) { try { await fs.promises.unlink(tempDwg); } catch (e) {} }
         if (tempDxf) { try { await fs.promises.unlink(tempDxf); } catch (e) {} }
+      }
+    });
+    return;
+  }
+
+
+  // ── 부품(블록) 이동·복사 편집 API (이 PC 안에서만: 127.0.0.1 요청만 받음). 원본은 고치지 않고 '저장/' 폴더에 새 DXF 로만 쓴다. ──
+  if (pathname.startsWith('/api/edit/')) {
+    const ra = req.socket.remoteAddress || '';
+    if (!(ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1')) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: '편집 기능은 이 PC 에서만 쓸 수 있습니다.' }));
+      return;
+    }
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', async () => {
+      const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
+      try {
+        const body = Buffer.concat(chunks);
+        const cmd = pathname.slice('/api/edit/'.length);
+        if (cmd === 'open') {
+          if (body.length === 0) return send(400, { error: '도면 데이터가 비어 있습니다.' });
+          const typ = url.searchParams.get('type') === 'dxf' ? 'dxf' : 'dwg';
+          const hash = crypto.createHash('sha1').update(body).digest('hex');
+          const cacheDir = path.join(os.tmpdir(), 'cad-viewer-cache');
+          await fs.promises.mkdir(cacheDir, { recursive: true });
+          const srcPath = path.join(cacheDir, `${hash}.edit.${typ}`);
+          if (!fs.existsSync(srcPath)) await fs.promises.writeFile(srcPath, body);
+          const r = await editLine(`open ${typ} ${srcPath}`);
+          return send(r.ok ? 200 : 500, r);
+        }
+        if (cmd === 'pick') {
+          const j = JSON.parse(body.toString('utf8'));
+          const r = await editLine(`pick ${Number(j.x)} ${Number(j.y)} ${Number(j.tol) || 0}`);
+          return send(r.ok ? 200 : 500, r);
+        }
+        if (cmd === 'list') {
+          const r = await editLine('list 8');
+          return send(r.ok ? 200 : 500, r);
+        }
+        if (cmd === 'save') {
+          const j = JSON.parse(body.toString('utf8'));
+          const fmt = j.format === 'dwg' ? 'dwg' : 'dxf';
+          const ops = (j.ops || []).filter((o) => (o.op === 'move' || o.op === 'copy') && /^\d+$/.test(String(o.handle)) && isFinite(o.dx) && isFinite(o.dy));
+          if (!ops.length) return send(400, { error: '저장할 변경이 없습니다.' });
+          const outDir = path.join(BASE_DIR, '저장');
+          await fs.promises.mkdir(outDir, { recursive: true });
+          const t = new Date(); const pad = (n) => String(n).padStart(2, '0');
+          const stamp = `${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}-${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}`;
+          const stem = String(j.stem || 'drawing').replace(/[\\/:*?"<>|\r\n]/g, '_').slice(0, 80);
+          let out = path.join(outDir, `${stem}_수정_${stamp}.${fmt}`), k = 2;
+          while (fs.existsSync(out)) out = path.join(outDir, `${stem}_수정_${stamp}(${k++}).${fmt}`);
+          const opsFile = path.join(os.tmpdir(), `cad-edit-ops-${Date.now()}.txt`);
+          await fs.promises.writeFile(opsFile, ops.map((o) => `${o.op} ${o.handle} ${o.dx} ${o.dy}`).join('\n') + '\n', 'utf8');
+          const r = await editLine(`save ${fmt} ${opsFile} ${out}`);
+          fs.promises.unlink(opsFile).catch(() => {});
+          if (r.ok) r.file = path.basename(out);
+          return send(r.ok ? 200 : 500, r);
+        }
+        if (cmd === 'download') {                                    // 저장 폴더의 파일을 내려받기(폴더 밖 경로는 거부)
+          const f = path.basename(url.searchParams.get('f') || '');
+          const p = path.join(BASE_DIR, '저장', f);
+          if (!f || !fs.existsSync(p)) return send(404, { error: '파일 없음' });
+          const data = await fs.promises.readFile(p);
+          res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': data.length, 'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(f) });
+          return res.end(data);
+        }
+        return send(404, { error: '알 수 없는 편집 명령' });
+      } catch (err) {
+        console.error('[API 에러] 편집 실패:', err.message);
+        send(500, { error: err.message });
       }
     });
     return;
