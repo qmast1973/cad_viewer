@@ -428,6 +428,7 @@
     view.appendChild(tpBar);
     const tpCur = document.createElement('div'); tpCur.id = 'tp-cur'; view.appendChild(tpCur);
     function tpCursor() {
+      tpCur.style.display = 'none'; return;                      // 화면에는 커서를 그리지 않는다(사용자 요청: 십자선은 돋보기에만)
       if (!TP.cross || !touchTool()) { tpCur.style.display = 'none'; return; }
       const col = TP.snap ? '#2bff7a' : '#ffffff';
       tpCur.style.left = (canvas.offsetLeft + TP.cross.x) + 'px'; tpCur.style.top = (canvas.offsetTop + TP.cross.y) + 'px'; tpCur.style.display = 'block';
@@ -455,7 +456,10 @@
         if (cv.width) { const cr = cv.width / Math.max(1, size().W); g.drawImage(cv, sx * cr, sy * cr, src * cr, src * cr, 0, 0, px, px); }
       } catch (e) { /* 복사 실패(그래픽 환경)는 건너뜀 */ }
       const c = px / 2, col = TP.snap ? '#2bff7a' : '#ffffff';
-      g.strokeStyle = col; g.lineWidth = 2 * dpr;
+      g.strokeStyle = col; g.lineWidth = 1;                       // 최대한 얇은 선(기기 픽셀 1)
+      g.beginPath(); g.moveTo(c - 30 * dpr, c + 0.5); g.lineTo(c - 4 * dpr, c + 0.5); g.moveTo(c + 4 * dpr, c + 0.5); g.lineTo(c + 30 * dpr, c + 0.5);
+      g.moveTo(c + 0.5, c - 30 * dpr); g.lineTo(c + 0.5, c - 4 * dpr); g.moveTo(c + 0.5, c + 4 * dpr); g.lineTo(c + 0.5, c + 30 * dpr); g.stroke();
+      g.lineWidth = 2 * dpr;
       if (TP.snap) { g.strokeRect(c - 8 * dpr, c - 8 * dpr, 16 * dpr, 16 * dpr); }
     }
     const touchTool = () => TOUCH_TOOLS.includes(T.tool) && isLite();
@@ -495,7 +499,8 @@
       const hidePanel = touchTool() && TP.coarse && !TP.showPanel;
       panel.style.display = hidePanel ? 'none' : '';
       panel.style.visibility = aiming ? 'hidden' : '';
-      const txt = (touchTool() && TP.coarse && !TP.showPanel) ? tpInfoText() : '';
+      let txt = (touchTool() && TP.coarse && !TP.showPanel) ? tpInfoText() : '';
+      if (txt && TP.cross && TP.down) txt = (TP.snap ? `스냅: ${SNAP_NAME[TP.snap.type] || TP.snap.type}` : (SNAP.on ? '스냅 없음(근처에 끝점·중점·교차 없음)' : '스냅 꺼짐')) + ' · ' + txt;
       tpInfo.textContent = txt; tpInfo.style.display = txt ? 'block' : 'none';
     }
     function tpClear() { T.hover = null; TP.cross = null; if (typeof tpCursor === 'function') tpCursor(); TP.snap = null; snapMark = null; tpShow(); loupe.style.display = 'none'; T.dirty = true; }
