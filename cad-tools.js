@@ -270,13 +270,14 @@
       const x0 = Math.min(...S.sel.map((o) => o.x0)), y0 = Math.min(...S.sel.map((o) => o.y0)), x1 = Math.max(...S.sel.map((o) => o.x1)), y1 = Math.max(...S.sel.map((o) => o.y1));
       zoomWindow(x0, y0, x1, y1); return true;
     }
+    let bigCache = { lite: null, big: false };
+    const isBig = () => { if (!app.lite) return false; if (bigCache.lite !== app.lite) bigCache = { lite: app.lite, big: totalVerts() >= 8e6 }; return bigCache.big; };
     const totalVerts = () => (app.lite ? app.lite.lines.reduce((n, l) => n + l.obj.geometry.attributes.position.count * (l.inst ? l.inst.n : 1), 0) : 0);
 
     function pickPoint(px, py, forceSnap, radiusPx) {
       const [wx, wy] = s2w(px, py);
       const rw = (radiusPx || 14) / pxPerUnit();
-      const big = totalVerts() >= 8e6;
-      const r = (forceSnap || !big) ? snapAt(wx, wy, rw, !forceSnap) : null;
+      const r = snapAt(wx, wy, rw, !forceSnap);                // 큰 도면도 스냅 표시(끌 때)는 하되, 호출 간격을 늘려 부담을 줄인다(isBig)
       return { p: r ? r.p : [wx, wy], snapped: !!r, type: r ? r.type : null };
     }
     function absOf(p) { const o = origin(); return [p[0] + o[0], p[1] + o[1]]; }
@@ -555,7 +556,7 @@
     canvas.addEventListener('pointermove', (e) => {
       if (e.pointerType !== 'touch' || !touchTool() || !TP.down || TP.fingers.size !== 1) return;
       if (TP.start && Math.hypot(e.clientX - TP.start.x, e.clientY - TP.start.y) > 6) TP.moved = true;
-      const nw = performance.now(); if (nw - TP.last < 40) return; TP.last = nw; tpMove(e);
+      const nw = performance.now(); if (nw - TP.last < (isBig() ? 100 : 40)) return; TP.last = nw; tpMove(e);
     });
     const tpEnd = (e) => {
       if (e.pointerType !== 'touch') return;
@@ -588,14 +589,14 @@
     canvas.addEventListener('pointermove', (e) => {         // 스냅 표식(측정·면적·좌표·편집 도구가 켜져 있을 때)
       if (e.pointerType === 'touch') return;
       if (!['dist', 'path', 'area', 'coord', 'edit'].includes(T.tool) || !isLite()) { if (snapMark) { snapMark = null; T.dirty = true; } return; }
-      const nw = performance.now(); if (nw - lastSnapT < 70) return; lastSnapT = nw;
+      const nw = performance.now(); if (nw - lastSnapT < (isBig() ? 120 : 70)) return; lastSnapT = nw;
       const rr = canvas.getBoundingClientRect(); const r = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false);
       snapMark = r.snapped ? { p: r.p, type: r.type } : null; T.dirty = true;
     });
     canvas.addEventListener('pointermove', (e) => {
       if (T.tool === 'edit' && E.step === 'target' && isLite()) { const nw = performance.now(); if (nw - lastHover < 50) return; lastHover = nw; const rr = canvas.getBoundingClientRect(); E.hover = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false).p; T.dirty = true; return; }
       if (!['dist', 'path', 'area'].includes(T.tool) || !T.pts.length || !isLite()) return;
-      const now = performance.now(); if (now - lastHover < 70) return; lastHover = now;
+      const now = performance.now(); if (now - lastHover < (isBig() ? 120 : 70)) return; lastHover = now;
       const r = canvas.getBoundingClientRect(); T.hover = pickPoint(e.clientX - r.left, e.clientY - r.top, false).p; T.dirty = true;
     });
     canvas.addEventListener('dblclick', () => { if (T.tool === 'area' && T.pts.length > 3) { T.pts.pop(); finishArea(); renderPanel(); } else if (T.tool === 'path' && T.pts.length > 2) { T.pts.pop(); finishPath(); renderPanel(); } });
