@@ -221,6 +221,46 @@
       return best;
     }
     function snapPoint(wx, wy, rw) { const r = snapAt(wx, wy, rw, false); return r ? r.p : null; }       // (이전 이름 유지)
+    // ── 부품(블록) 선택: 도면에 들어 있는 부품 목록(objs: 이름·도면층·범위·핸들)에서 커서 아래 것을 고른다. 서버 없이 웹·폰에서도 된다. ──
+    const S = { objs: null, src: null, sel: [], pt: null, cand: [], ci: 0 };
+    function objsList() {
+      if (!app.lite) return [];
+      if (S.src !== app.lite) { S.src = app.lite; S.sel = []; S.pt = null; S.cand = []; S.objs = (app.lite.head.objs || []).map((r) => ({ n: r[0], l: r[1], x0: r[2], y0: r[3], x1: r[4], y1: r[5], h: r[6] })); }
+      return S.objs;
+    }
+    const objSize = (o) => [o.x1 - o.x0, o.y1 - o.y0];
+    function selCandidates(wx, wy, tol) {
+      const out = [];
+      for (const o of objsList()) {
+        if (wx < o.x0 - tol || wx > o.x1 + tol || wy < o.y0 - tol || wy > o.y1 + tol) continue;
+        const lay = app.layers.get(o.l); if (lay && !lay.visible) continue;
+        out.push(o);
+      }
+      out.sort((a, b) => (a.x1 - a.x0) * (a.y1 - a.y0) - (b.x1 - b.x0) * (b.y1 - b.y0));      // 작은 것(안쪽 부품)부터
+      return out;
+    }
+    /* (wx,wy) 도면 지역 좌표에서 부품을 고른다. 같은 자리를 다시 누르면 겹친 다음 부품(순환), add 이면 목록에 더하거나 뺀다. */
+    function selectAt(wx, wy, add) {
+      if (!app.lite) return null;
+      if (!(app.lite.head.objs && app.lite.head.objs.length)) { toast('이 도면에는 부품 정보가 없습니다(다시 열어 보세요)'); return null; }
+      const tol = 3 / pxPerUnit();
+      const c = selCandidates(wx, wy, tol);
+      const same = S.pt && Math.hypot(wx - S.pt[0], wy - S.pt[1]) < 4 / pxPerUnit() && S.cand.length === c.length;
+      S.pt = [wx, wy]; S.cand = c;
+      if (!c.length) { if (!add) S.sel = []; T.dirty = true; renderPanel(); return null; }
+      S.ci = same ? (S.ci + 1) % c.length : 0;
+      const pick = c[S.ci];
+      if (add) { const k = S.sel.indexOf(pick); if (k >= 0) S.sel.splice(k, 1); else S.sel.push(pick); }
+      else S.sel = [pick];
+      T.dirty = true; renderPanel();
+      return pick;
+    }
+    function selInfo(o) { const [w, h] = objSize(o), org = origin(); return { name: o.n, layer: o.l, handle: String(o.h), x: o.x0 + org[0], y: o.y0 + org[1], width: w, height: h }; }
+    function selZoom() {
+      if (!S.sel.length) return false;
+      const x0 = Math.min(...S.sel.map((o) => o.x0)), y0 = Math.min(...S.sel.map((o) => o.y0)), x1 = Math.max(...S.sel.map((o) => o.x1)), y1 = Math.max(...S.sel.map((o) => o.y1));
+      zoomWindow(x0, y0, x1, y1); return true;
+    }
     const totalVerts = () => (app.lite ? app.lite.lines.reduce((n, l) => n + l.obj.geometry.attributes.position.count * (l.inst ? l.inst.n : 1), 0) : 0);
 
     function pickPoint(px, py, forceSnap) {
@@ -237,8 +277,9 @@
       else toast('점이 3개 이상 필요합니다');
       T.pts = []; T.hover = null; T.dirty = true;
     }
-    function onClick(px, py) {
+    function onClick(px, py, shift) {
       if (!T.tool || !isLite()) return;
+      if (T.tool === 'sel') { const [wx, wy] = s2w(px, py); selectAt(wx, wy, !!shift); return; }
       const { p } = pickPoint(px, py, true);
       if (T.tool === 'edit') { editClick(p); T.dirty = true; return; }
       if (T.tool === 'dist') {
@@ -365,7 +406,7 @@
     canvas.addEventListener('pointerup', (e) => {
       if (!down || e.pointerId !== down.id) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); const btn = down.t; down = null;
-      if (moved < 6 && btn === 0 && ['dist', 'area', 'coord', 'edit'].includes(T.tool)) { const r = canvas.getBoundingClientRect(); onClick(e.clientX - r.left, e.clientY - r.top); }
+      if (moved < 6 && btn === 0 && ['dist', 'area', 'coord', 'edit', 'sel'].includes(T.tool)) { const r = canvas.getBoundingClientRect(); onClick(e.clientX - r.left, e.clientY - r.top, e.shiftKey); }
     });
     let snapMark = null, lastSnapT = 0;
     canvas.addEventListener('pointermove', (e) => {         // 스냅 표식(측정·면적·좌표·편집 도구가 켜져 있을 때)
@@ -394,7 +435,7 @@
     });
     window.addEventListener('keydown', (e) => {
       if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) { if (e.key === 'Escape') e.target.blur(); return; }
-      if (e.key === 'Escape') { if (T.tool === 'edit' && (E.op || E.sel)) { editEnd(); } else { T.pts = []; T.hover = null; setTool(null); T.dirty = true; } }
+      if (e.key === 'Escape') { if (T.tool === 'sel' && S.sel.length) { S.sel = []; T.dirty = true; renderPanel(); } else if (T.tool === 'edit' && (E.op || E.sel)) { editEnd(); } else { T.pts = []; T.hover = null; setTool(null); T.dirty = true; } }
       else if (e.key === 'Enter' && T.tool === 'edit' && (E.op || E.sel)) { editEnd(); }
       else if (e.key === 'Enter' && T.tool === 'area') { finishArea(); renderPanel(); }
       else if (e.key === 'Backspace' && T.pts.length) { T.pts.pop(); T.dirty = true; renderPanel(); }
@@ -468,6 +509,16 @@
           label(ctx, hx, hy, `ΔX ${fmt(dx)}  ΔY ${fmt(dy)}`);
         }
       }
+      if (S.sel.length && S.src === app.lite) {                                              // 선택한 부품: 노란 테두리 + 이름
+        ctx.lineWidth = 2; ctx.strokeStyle = '#ffd400'; ctx.fillStyle = 'rgba(255,212,0,.12)';
+        for (const o of S.sel.slice(0, 200)) {
+          const [ax, ay] = w2s(o.x0, o.y1), [bx, by] = w2s(o.x1, o.y0);
+          const w = Math.max(bx - ax, 6), h = Math.max(by - ay, 6);
+          if (ax > W + 50 || ay > H + 50 || ax + w < -50 || ay + h < -50) continue;
+          ctx.fillRect(ax, ay, w, h); ctx.strokeRect(ax, ay, w, h);
+          if (S.sel.length < 20) label(ctx, ax + w / 2, ay - 4, o.n);
+        }
+      }
       if (snapMark && ['dist', 'area', 'coord', 'edit'].includes(T.tool)) {                  // 스냅 표식: 끝점 □ · 중점 △ · 교차 ×
         const [sx, sy] = w2s(snapMark.p[0], snapMark.p[1]); const col = { end: '#2bff7a', mid: '#2bd8ff', int: '#ff4df0' }[snapMark.type];
         ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
@@ -533,7 +584,7 @@
     // ── 패널 UI ──
     const bar = document.createElement('div'); bar.className = 'floating-tools';
     const defs = [['find', '찾기', '글자 찾기'], ['dist', '거리', '두 점 거리 (끝점 자동 맞춤)'], ['area', '면적', '여러 점으로 면적·둘레 (Enter/더블클릭 완료)'], ['coord', '좌표', '점 좌표 보기'],
-      ['edit', '편집', '부품 이동(M)·복사(CO) — 원본은 그대로, 새 DXF 로 저장'], ['zoomwin', '영역', '끌어서 영역 확대'], ['prev', '이전', '이전 보기'], ['font', '글꼴', '글자 표시·글꼴 설정'], ['png', 'PNG', '지금 화면을 PNG로 저장']];
+      ['sel', '선택', '부품(블록) 선택 — 누르면 고르고 정보 표시, 같은 자리를 다시 누르면 겹친 다음 부품, Shift 로 여러 개'], ['edit', '편집', '부품 이동(M)·복사(CO) — 원본은 그대로, 새 DXF 로 저장'], ['zoomwin', '영역', '끌어서 영역 확대'], ['prev', '이전', '이전 보기'], ['font', '글꼴', '글자 표시·글꼴 설정'], ['png', 'PNG', '지금 화면을 PNG로 저장']];
     const btns = {};
     defs.forEach(([k, txt, tip]) => { const b = document.createElement('button'); b.className = 'btn'; b.textContent = txt; b.title = tip; b.dataset.k = k; bar.appendChild(b); btns[k] = b; });
     view.appendChild(bar);
@@ -546,8 +597,9 @@
       Object.keys(btns).forEach((k) => btns[k].classList.toggle('active', k === T.tool || (k === panelKind && panel.classList.contains('open'))));
       canvas.style.cursor = T.tool ? 'crosshair' : '';
       if (['dist', 'area', 'coord'].includes(T.tool)) { panelKind = 'measure'; panel.classList.add('open'); }
+      else if (T.tool === 'sel') { panelKind = 'sel'; panel.classList.add('open'); }
       else if (T.tool === 'edit') { panelKind = 'edit'; panel.classList.add('open'); if (!E.ready && !E.busy && localServer() && isLite()) setTimeout(editOpen, 0); }
-      else if (T.tool === null && (panelKind === 'measure' || panelKind === 'edit')) panel.classList.remove('open');
+      else if (T.tool === null && (panelKind === 'measure' || panelKind === 'edit' || panelKind === 'sel')) panel.classList.remove('open');
       renderPanel();
     }
     function openPanel(kind) {
@@ -598,6 +650,19 @@
         if ($('mDone')) $('mDone').onclick = () => { finishArea(); renderPanel(); };
         $('mClear').onclick = () => { T.records = []; T.pts = []; T.hover = null; T.dirty = true; renderPanel(); };
         $('mCsv').onclick = () => downloadCsv();
+      } else if (panelKind === 'sel') {
+        const n = objsList().length;
+        const first = S.sel[0];
+        panel.innerHTML = `<h4>부품 선택 <button class="btn btn-icon-only" id="pClose" style="border:none;height:22px;width:22px">✕</button></h4>
+          <div class="muted">${n ? `부품 ${n.toLocaleString()}개 · 누르면 고르고, 같은 자리를 다시 누르면 겹친 다음 부품, Shift+누름으로 여러 개` : '이 도면에는 부품 정보가 없습니다(도면을 다시 열어 보세요)'}</div>
+          <div class="row"><button class="btn" id="sZoom" style="width:auto;padding:0 8px" ${S.sel.length ? '' : 'disabled'}>확대</button>
+            <button class="btn" id="sNext" style="width:auto;padding:0 8px" ${S.cand.length > 1 ? '' : 'disabled'}>겹친 것 다음</button>
+            <button class="btn" id="sClear" style="width:auto;padding:0 8px" ${S.sel.length ? '' : 'disabled'}>해제</button></div>
+          ${first ? (() => { const i = selInfo(first); return `<div class="list" style="max-height:none"><div class="item" style="flex-direction:column"><b>${esc(i.name)}</b><span class="muted">도면층 ${esc(i.layer)} · 핸들 ${esc(i.handle)}</span><span class="muted">위치 X ${fmt(i.x)}, Y ${fmt(i.y)} · 크기 ${fmt(i.width)} × ${fmt(i.height)}</span>${S.cand.length > 1 ? `<span class="muted">이 자리에 겹친 부품 ${S.cand.length}개 중 ${S.ci + 1}번째(작은 것부터)</span>` : ''}</div></div>`; })() : ''}
+          ${S.sel.length > 1 ? `<div class="muted">선택 ${S.sel.length}개</div><div class="list">${S.sel.slice(0, 60).map((o, k) => `<div class="item" data-k="${k}"><span>${esc(o.n)}</span><small>${esc(o.l)}</small></div>`).join('')}</div>` : ''}`;
+        $('sZoom').onclick = () => selZoom();
+        $('sNext').onclick = () => { if (S.cand.length > 1) { S.ci = (S.ci + 1) % S.cand.length; S.sel = [S.cand[S.ci]]; T.dirty = true; renderPanel(); } };
+        $('sClear').onclick = () => { S.sel = []; T.dirty = true; renderPanel(); };
       } else if (panelKind === 'edit') {
         const stepTxt = { idle: '준비 전', select: '부품을 누르세요', base: '기준점을 누르세요', target: '목표점을 누르세요' }[E.step] || '';
         panel.innerHTML = `<h4>부품 이동·복사 <button class="btn btn-icon-only" id="pClose" style="border:none;height:22px;width:22px">✕</button></h4>
@@ -664,6 +729,7 @@
     function fitAll() { if (typeof app.fitToScreen === 'function') app.fitToScreen(); else if (window.cadViewer && window.cadViewer.fit) window.cadViewer.fit(); T.dirty = true; app.textsDirty = true; }
     const toolOn = (t) => { if (T.tool !== t) setTool(t); };
     const CMD = {
+      SE: () => toolOn('sel'), SEL: () => toolOn('sel'), SELECT: () => toolOn('sel'),
       M: () => startOp('move'), MOVE: () => startOp('move'),
       CO: () => startOp('copy'), CP: () => startOp('copy'), COPY: () => startOp('copy'),
       U: () => editUndo(), UNDO: () => editUndo(),
@@ -720,7 +786,7 @@
 
     // 도면을 새로 열면 찾기·측정 기록을 비움
     const origRender = app.renderLite.bind(app);
-    app.renderLite = function (buf, name) { fitDist0 = 0; T.find = { q: '', opts: T.find.opts, res: [], cur: -1 }; E.ready = false; E.sel = null; E.ops = []; E.step = 'idle'; E.op = null; E.base = null; E.hover = null; E.saved = null; E.msg = '편집을 시작하려면 [편집 준비]를 누르세요'; T.records = []; T.pts = []; T.hover = null; T.views = []; isolated = null; const r = origRender(buf, name); T.dirty = true; renderPanel(); return r; };
+    app.renderLite = function (buf, name) { fitDist0 = 0; S.sel = []; S.pt = null; S.cand = []; S.src = null; T.find = { q: '', opts: T.find.opts, res: [], cur: -1 }; E.ready = false; E.sel = null; E.ops = []; E.step = 'idle'; E.op = null; E.base = null; E.hover = null; E.saved = null; E.msg = '편집을 시작하려면 [편집 준비]를 누르세요'; T.records = []; T.pts = []; T.hover = null; T.views = []; isolated = null; const r = origRender(buf, name); T.dirty = true; renderPanel(); return r; };
 
     // 에이전트용 조작 (window.cadTools)
     window.cadTools = {
@@ -733,6 +799,7 @@
       edit: { open: editOpen, pick: async (x, y) => { const s = await editPick([x, y]); return s && { handle: s.handle, name: s.name, layer: s.layer, bbox: s.bbox }; }, move: (dx, dy) => editApply('move', dx, dy), copy: (dx, dy) => editApply('copy', dx, dy), undo: editUndo, save: editSave,
         ops: () => E.ops.map((o) => ({ op: o.op, handle: o.handle, name: o.name, dx: o.dx, dy: o.dy })), state: () => ({ ready: E.ready, busy: E.busy, step: E.step, op: E.op, selected: E.sel && E.sel.name, ops: E.ops.length, saved: E.saved, msg: E.msg }), clearSel: () => { E.sel = null; T.dirty = true; } },
       command: (t) => runCmd(t),
+      select: { at: (x, y, add) => { const o = origin(); const r = selectAt(x - o[0], y - o[1], !!add); return r && selInfo(r); }, list: () => S.sel.map(selInfo), count: () => objsList().length, clear: () => { S.sel = []; T.dirty = true; renderPanel(); }, zoom: () => selZoom(), candidates: () => S.cand.map(selInfo) },
       snap: { at: (x, y, px) => { const o = origin(); const rw = (px || 14) / pxPerUnit(); const r = snapAt(x - o[0], y - o[1], rw, false); return r && { x: r.p[0] + o[0], y: r.p[1] + o[1], type: r.type }; }, set: (o) => { Object.assign(SNAP, o); return Object.assign({}, SNAP); }, get: () => Object.assign({}, SNAP) },
       exportPng: () => exportPng(false), downloadPng: () => exportPng(true), openPanel, state: () => ({ tool: T.tool, finds: T.find.res.length, records: T.records.length, views: T.views.length, panel: panelKind })
     };

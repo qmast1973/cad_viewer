@@ -845,7 +845,7 @@
          wasm 을 못 쓰는 환경이면 로컬 서버(/api/dwg-lite)로 다시 시도한다. */
       convertDwg(arrayBuf, name, isDxf) {
         this.srcBuf = arrayBuf.slice(0); this.srcType = isDxf ? 'dxf' : 'dwg';     // 편집(이동·복사)용 원본 사본
-        const ENGINE = 'v7';                    // 변환기를 바꾸면 올려서 옛 캐시를 버린다
+        const ENGINE = 'v8';                    // 변환기를 바꾸면 올려서 옛 캐시를 버린다
         const viaWasm = (buf0) => new Promise((resolve, reject) => {
           if (typeof Worker === 'undefined' || typeof WebAssembly === 'undefined') return reject(new Error('이 브라우저는 wasm 을 지원하지 않음'));
           let w;
@@ -896,7 +896,7 @@
         return cacheGet().then(hit => {
           if (hit) { console.info('[변환 캐시 사용]'); this.lastConvertCached = true; return hit; }
           const keep = arrayBuf.slice(0);
-          const first = local ? () => viaServer(keep).catch((e1) => { console.warn('[서버 변환 실패 → 브라우저 wasm]', e1.message); return viaWasm(arrayBuf).catch((e2) => { throw new Error(`서버 변환 실패: ${e1.message} / 브라우저 변환 실패: ${e2.message}`); }); })
+          const first = (local && !isDxf) ? () => viaServer(keep).catch((e1) => { console.warn('[서버 변환 실패 → 브라우저 wasm]', e1.message); return viaWasm(arrayBuf).catch((e2) => { throw new Error(`서버 변환 실패: ${e1.message} / 브라우저 변환 실패: ${e2.message}`); }); })
                             : () => viaWasm(keep).catch((e1) => { console.warn('[wasm 변환 실패 → 서버 방식 시도]', e1.message); return viaServer(arrayBuf).catch((e2) => { throw new Error(`브라우저 변환 실패: ${e1.message} / 서버 변환 실패: ${e2.message}`); }); });
           return first().then(async (out) => { await cachePut(out.slice(0)); return out; });
         }).then(v => { stop(); return v; }, e => { stop(); throw e; });

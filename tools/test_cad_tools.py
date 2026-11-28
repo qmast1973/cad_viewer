@@ -62,7 +62,7 @@ async def main():
                 await asyncio.sleep(1.5)
 
             await load_sample('sample.dwg')
-            check("도구 모음이 붙음(window.cadTools)", await ev("typeof window.cadTools === 'object' && document.querySelectorAll('.floating-tools button').length") == 9)
+            check("도구 모음이 붙음(window.cadTools)", await ev("typeof window.cadTools === 'object' && document.querySelectorAll('.floating-tools button').length") == 10)
 
             # 찾기: 도면 안의 글자 하나를 골라 그 일부로 찾는다
             word = await ev("""(()=>{const a=window.cadViewer.app;for(const t of a.lite.texts){const l=a.cleanCadLines(t.s).join(' ');const m=l.match(/[A-Za-z가-힣0-9]{3,}/);if(m)return m[0];}return ''})()""")

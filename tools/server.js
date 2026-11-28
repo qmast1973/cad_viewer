@@ -89,7 +89,7 @@ const server = http.createServer(async (req, res) => {
         const cacheDir = path.join(os.tmpdir(), 'cad-viewer-cache');
         await fs.promises.mkdir(cacheDir, { recursive: true });
         const isDxf = url.searchParams.get('type') === 'dxf';           // DXF 는 변환 단계 없이 바로 줄인다
-        const lite = path.join(cacheDir, `${hash}${isDxf ? '.dxf' : ''}.v7.cadlite`);
+        const lite = path.join(cacheDir, `${hash}${isDxf ? '.dxf' : ''}.v8.cadlite`);
         let cached = true;
         if (!fs.existsSync(lite)) {
           cached = false;
