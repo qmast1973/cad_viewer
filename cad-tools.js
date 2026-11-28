@@ -30,9 +30,11 @@
   .layer-extra button{border:1px solid var(--panel-border);background:var(--btn-bg);color:var(--text-main);border-radius:4px;font-size:10px;height:20px;padding:0 4px;cursor:pointer}
   #installBtn{white-space:nowrap;flex-shrink:0;padding:0 10px;font-size:12px}
   @media (max-width:480px){#sampleSelect{max-width:96px}}
+  #tp-info{position:absolute;left:50%;top:58px;transform:translateX(-50%);display:none;max-width:calc(100% - 300px);min-width:150px;padding:6px 12px;border-radius:14px;background:var(--panel-bg);border:1px solid var(--panel-border);color:var(--text-main);font-size:12.5px;line-height:1.35;text-align:center;z-index:14;pointer-events:none;backdrop-filter:blur(8px)}
+  @media (max-width:520px){#tp-info{max-width:calc(100% - 24px);top:auto;bottom:118px}}
   #tp-loupe{position:absolute;top:60px;display:none;width:132px;height:132px;border-radius:50%;border:3px solid #ffd400;box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:16;background:#101114;pointer-events:none}
   #tp-bar{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);display:none;gap:10px;z-index:15}
-  #tp-bar button{height:46px;padding:0 20px;font-size:15px;border-radius:23px;border:1px solid var(--panel-border);background:var(--accent-color,#0a84ff);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+  #tp-bar button{white-space:nowrap;height:46px;padding:0 15px;font-size:14.5px;border-radius:23px;border:1px solid var(--panel-border);background:var(--accent-color,#0a84ff);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.4)}
   #tp-bar button.sub{background:var(--panel-bg);color:var(--text-main)}
   @media (max-width:640px){#cad-panel{left:60px;width:calc(100% - 72px)}}`;
 
@@ -411,11 +413,12 @@
     //    보여 준 뒤 [점 찍기] 를 눌러 확정한다. 화면 이동·확대는 두 손가락. 마우스는 예전처럼 누르면 바로 찍힘. ──
     let snapMark = null, lastSnapT = 0;
     const TOUCH_TOOLS = ['dist', 'area', 'coord', 'edit'];
-    const TP = { cross: null, snap: null, fingers: new Set(), down: false, last: 0 };
+    const TP = { coarse: !!(window.matchMedia && matchMedia('(pointer: coarse)').matches), showPanel: false, cross: null, snap: null, fingers: new Set(), down: false, last: 0, aim: false, moved: false, start: null, grab: null };
     const TP_OFFSET = 70;
     const tpBar = document.createElement('div'); tpBar.id = 'tp-bar';
-    tpBar.innerHTML = '<button id="tpPut">✓ 점 찍기</button><button class="sub" id="tpCancel">✕ 취소</button>';
+    tpBar.innerHTML = '<button class="sub" id="tpPanelBtn">≡ 설정</button><button class="sub" id="tpUndo">↶ 되돌리기</button><button id="tpPut">✓ 여기에 찍기</button><button class="sub" id="tpCancel">✕ 취소</button>';
     view.appendChild(tpBar);
+    const tpInfo = document.createElement('div'); tpInfo.id = 'tp-info'; view.appendChild(tpInfo);
     // 돋보기: 손가락이 십자선을 가려도 보이게, 십자선 둘레를 3배로 확대해 반대편 위쪽 모서리에 보여 준다.
     const loupe = document.createElement('canvas'); loupe.id = 'tp-loupe'; view.appendChild(loupe);
     const LOUPE = { size: 132, zoom: 3 };
@@ -446,8 +449,57 @@
       const active = ['dist', 'area', 'coord', 'edit', 'sel'].includes(T.tool) && isLite();
       app.controls.touches.ONE = active ? -1 : (app.is2DMode ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE);
     }
-    function tpShow() { const on = TP.cross && touchTool(); tpBar.style.display = on ? 'flex' : 'none'; panel.style.visibility = on ? 'hidden' : ''; }       // 조준하는 동안은 패널을 숨겨 화면과 단추를 가리지 않게
+    function tpInfoText() {
+      const last = T.records[T.records.length - 1];
+      if (T.tool === 'dist') {
+        if (T.pts.length === 1) return '둘째 점: 십자선을 끝점·중점에 맞추고 손을 떼세요';
+        if (last && last.type === '거리') return `거리 ${fmt(last.value)} (ΔX ${fmt(last.dx)}, ΔY ${fmt(last.dy)}, ${last.angle.toFixed(1)}°) · 점 위에 십자선을 올려 끌면 옮길 수 있음`;
+        return '처음 점: 손가락을 끌어 십자선을 끝점·중점에 맞추고 손을 떼세요';
+      }
+      if (T.tool === 'area') return T.pts.length ? `${T.pts.length}점 · 점마다 스냅에 맞춰 손을 떼세요 · 끝나면 ≡ 설정 → 면적 완료` : (last && last.type === '면적' ? `면적 ${fmt(last.value)} · 둘레 ${fmt(last.perimeter)}` : '첫 점: 십자선을 맞추고 손을 떼세요');
+      if (T.tool === 'coord') return last && last.type === '좌표' ? `좌표 X ${fmt(last.x)}, Y ${fmt(last.y)}` : '좌표를 볼 곳에 십자선을 맞추고 손을 떼세요';
+      if (T.tool === 'edit') return E.msg || '';
+      return '';
+    }
+    function tpShow() {
+      if (!T.ready) return;                                     // 시작(boot)이 끝나기 전에는 패널 등이 아직 없다
+      const aiming = !!(TP.cross && touchTool());
+      const hasWork = touchTool() && (T.pts.length > 0 || T.records.length > 0);
+      const idle = touchTool() && !TP.down;
+      $('tpPut').style.display = aiming ? '' : 'none'; $('tpCancel').style.display = aiming ? '' : 'none';
+      $('tpUndo').style.display = (idle && hasWork) ? '' : 'none';
+      $('tpPanelBtn').style.display = (idle && TP.coarse && !aiming) ? '' : 'none';
+      tpBar.style.display = (aiming || (idle && (hasWork || TP.coarse))) ? 'flex' : 'none';
+      // 터치로 쓰는 중이면 큰 측정 패널은 숨긴다(손가락 조준·화면을 가리고, 패널 위에서는 점을 못 찍으므로). [≡ 설정] 으로 잠깐 열 수 있다.
+      const hidePanel = touchTool() && TP.coarse && !TP.showPanel;
+      panel.style.display = hidePanel ? 'none' : '';
+      panel.style.visibility = aiming ? 'hidden' : '';
+      const txt = (touchTool() && TP.coarse && !TP.showPanel) ? tpInfoText() : '';
+      tpInfo.textContent = txt; tpInfo.style.display = txt ? 'block' : 'none';
+    }
     function tpClear() { TP.cross = null; TP.snap = null; snapMark = null; tpShow(); loupe.style.display = 'none'; T.dirty = true; }
+    /* 이미 찍은 점(진행 중인 점 + 기록된 측정의 점)을 옮길 수 있게: 십자선이 점 위에 올라가 있으면 그 점을 '잡는다'. */
+    function tpHandles() {
+      const h = [];
+      T.pts.forEach((p, i) => h.push({ p, rec: null, i }));
+      T.records.forEach((r) => (r.pts || []).forEach((p, i) => h.push({ p, rec: r, i })));
+      return h;
+    }
+    function tpFindHandle(cx, cy) {
+      let best = null, bd = 24;
+      for (const hd of tpHandles()) { const [sx, sy] = w2s(hd.p[0], hd.p[1]); const d = Math.hypot(sx - cx, sy - cy); if (d < bd) { bd = d; best = hd; } }
+      return best;
+    }
+    function tpRecompute(r) {
+      if (!r) return;
+      if (r.type === '거리') { const [p, q] = r.pts; r.dx = q[0] - p[0]; r.dy = q[1] - p[1]; r.value = Math.hypot(r.dx, r.dy); r.angle = Math.atan2(r.dy, r.dx) * 180 / Math.PI; }
+      else if (r.type === '면적') { r.value = polyArea(r.pts); r.perimeter = polyLen(r.pts, true); }
+      else if (r.type === '좌표') { const o = origin(); r.x = r.pts[0][0] + o[0]; r.y = r.pts[0][1] + o[1]; }
+    }
+    function tpUndo() {
+      if (T.pts.length) T.pts.pop(); else if (T.records.length) T.records.pop();
+      T.hover = null; T.dirty = true; renderPanel(); tpShow();
+    }
     function tpMove(e) {
       const r = canvas.getBoundingClientRect();
       const x = e.clientX - r.left, y = Math.max(0, e.clientY - r.top - TP_OFFSET);
@@ -455,25 +507,48 @@
       const q = pickPoint(x, y, false, 24);
       TP.snap = q.snapped ? { p: q.p, type: q.type } : null; TP.pt = q.p; snapMark = TP.snap;
       if (T.tool === 'edit' && E.step === 'target') E.hover = q.p; else if (['dist', 'area'].includes(T.tool) && T.pts.length) T.hover = q.p;
+      if (TP.grab) { TP.grab.p[0] = q.p[0]; TP.grab.p[1] = q.p[1]; tpRecompute(TP.grab.rec); }
       T.dirty = true; tpShow(); tpLoupe();
     }
     function tpPut() {
       if (!TP.cross || !touchTool()) return;
-      const { x, y } = TP.cross, pt = TP.pt; tpClear(); onClick(x, y, false, pt);
+      const { x, y } = TP.cross, pt = TP.pt; tpClear(); onClick(x, y, false, pt); tpShow();
     }
     canvas.addEventListener('pointerdown', (e) => {                      // 캡처 단계: OrbitControls 가 받기 전에 한 손가락 이동을 끈다
       updateTouchMode();
+      const wasCoarse = TP.coarse; TP.coarse = e.pointerType === 'touch' || e.pointerType === 'pen'; if (wasCoarse !== TP.coarse) tpShow();
       if (e.pointerType !== 'touch' || !touchTool()) return;
       TP.fingers.add(e.pointerId);
-      if (TP.fingers.size === 1) { TP.down = true; tpMove(e); } else { TP.down = false; }          // 두 손가락이면 이동·확대
+      if (TP.fingers.size === 1) {
+        TP.down = true; TP.aim = true; TP.moved = false; TP.start = { x: e.clientX, y: e.clientY }; TP.grab = null;
+        tpMove(e);
+        if (TP.cross) { TP.grab = tpFindHandle(TP.cross.x, TP.cross.y); if (TP.grab) { TP.snap = null; snapMark = null; } }    // 십자선이 찍어 둔 점 위면 그 점을 잡음
+      } else { TP.down = false; TP.aim = false; TP.grab = null; }                                   // 두 손가락이면 이동·확대
     }, true);
     canvas.addEventListener('pointermove', (e) => {
       if (e.pointerType !== 'touch' || !touchTool() || !TP.down || TP.fingers.size !== 1) return;
+      if (TP.start && Math.hypot(e.clientX - TP.start.x, e.clientY - TP.start.y) > 6) TP.moved = true;
       const nw = performance.now(); if (nw - TP.last < 40) return; TP.last = nw; tpMove(e);
     });
-    const tpEnd = (e) => { if (e.pointerType !== 'touch') return; TP.fingers.delete(e.pointerId); if (TP.fingers.size === 0) { TP.down = false; if (TP.cross && touchTool()) tpMove({ clientX: TP.cross.x + canvas.getBoundingClientRect().left, clientY: TP.cross.y + TP_OFFSET + canvas.getBoundingClientRect().top }); } };
+    const tpEnd = (e) => {
+      if (e.pointerType !== 'touch') return;
+      TP.fingers.delete(e.pointerId);
+      if (TP.fingers.size !== 0) return;
+      const wasAim = TP.aim, moved = TP.moved, grab = TP.grab, snapped = !!TP.snap;
+      TP.down = false; TP.aim = false; TP.grab = null; TP.start = null;
+      if (!(TP.cross && touchTool())) { tpShow(); return; }
+      if (wasAim && grab) {                                   // 찍어 둔 점을 옮기던 중 손을 뗌 → 그 자리(스냅이면 스냅 점)로 확정
+        tpClear(); tpRecompute(grab.rec); renderPanel(); if (navigator.vibrate) navigator.vibrate(12); return;
+      }
+      if (wasAim && moved && snapped) {                       // 끌어서 스냅이 잡힌 채 손을 뗌 → 바로 점으로 확정
+        if (navigator.vibrate) navigator.vibrate(12);
+        tpPut(); return;
+      }
+      tpShow();                                               // 그냥 눌렀거나 스냅이 없으면 십자선을 남기고 [여기에 찍기] 로 확정/다시 끌어서 조정
+    };
     canvas.addEventListener('pointerup', tpEnd); canvas.addEventListener('pointercancel', tpEnd);
-    $('tpPut').addEventListener('click', tpPut); $('tpCancel').addEventListener('click', tpClear);
+    $('tpPut').addEventListener('click', tpPut); $('tpCancel').addEventListener('click', tpClear); $('tpUndo').addEventListener('click', tpUndo);
+    $('tpPanelBtn').addEventListener('click', () => { TP.showPanel = !TP.showPanel; if (TP.showPanel) panel.classList.add('open'); tpShow(); renderPanel(); });
     let down = null, lastHover = 0, zw = null;
     canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, id: e.pointerId, t: e.button }; });
     canvas.addEventListener('pointerup', (e) => {
@@ -548,7 +623,8 @@
         if (!pts.length) return; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
         ctx.beginPath(); pts.forEach((p, i) => { const [x, y] = w2s(p[0], p[1]); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); if (closed) ctx.closePath();
         if (fill) { ctx.save(); ctx.globalAlpha = 0.18; ctx.fill(); ctx.restore(); } ctx.stroke();
-        pts.forEach((p) => { const [x, y] = w2s(p[0], p[1]); ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill(); });
+        const hr = touchTool() ? 7 : 4;
+        pts.forEach((p) => { const [x, y] = w2s(p[0], p[1]); ctx.beginPath(); ctx.arc(x, y, hr, 0, Math.PI * 2); ctx.fill(); });
       };
       T.records.forEach((r) => {
         const c = colors[r.type]; drawPts(r.pts, c, r.type === '면적', r.type === '면적');
@@ -672,7 +748,7 @@
 
     function setTool(t) {
       if (t && !isLite() && t !== 'prev' && t !== 'png') { toast('큰 도면(DWG·DXF) 모드에서 쓸 수 있습니다'); return; }
-      T.tool = (T.tool === t) ? null : t; T.pts = []; T.hover = null; T.dirty = true; tpClear(); updateTouchMode();
+      T.tool = (T.tool === t) ? null : t; T.pts = []; T.hover = null; T.dirty = true; TP.showPanel = false; tpClear(); updateTouchMode();
       Object.keys(btns).forEach((k) => btns[k].classList.toggle('active', k === T.tool || (k === panelKind && panel.classList.contains('open'))));
       canvas.style.cursor = T.tool ? 'crosshair' : '';
       if (['dist', 'area', 'coord'].includes(T.tool)) { panelKind = 'measure'; panel.classList.add('open'); }
@@ -698,7 +774,7 @@
 
     function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
     function renderPanel() {
-      syncBtns();
+      syncBtns(); if (typeof tpShow === 'function') tpShow();
       if (!panel.classList.contains('open')) return;
       if (panelKind === 'find') {
         const f = T.find, o = f.opts;
@@ -879,12 +955,13 @@
         ops: () => E.ops.map((o) => ({ op: o.op, handle: o.handle, name: o.name, dx: o.dx, dy: o.dy })), state: () => ({ ready: E.ready, busy: E.busy, step: E.step, op: E.op, selected: E.sel && E.sel.name, ops: E.ops.length, saved: E.saved, msg: E.msg }), clearSel: () => { E.sel = null; T.dirty = true; } },
       command: (t) => runCmd(t),
       view: { toScreen: (x, y) => { const o = origin(); const [sx, sy] = w2s(x - o[0], y - o[1]); const r = canvas.getBoundingClientRect(); return [sx + r.left, sy + r.top]; } },
-      touch: { state: () => ({ cross: TP.cross, snap: TP.snap && TP.snap.type, bar: tpBar.style.display, one: app.controls.touches.ONE, loupe: loupe.style.display, loupeSide: loupe.style.left === '12px' ? 'left' : 'right' }), put: tpPut },
+      touch: { state: () => ({ cross: TP.cross, snap: TP.snap && TP.snap.type, bar: tpBar.style.display, one: app.controls.touches.ONE, pts: T.pts.length, records: T.records.length, grab: !!TP.grab, loupe: loupe.style.display, loupeSide: loupe.style.left === '12px' ? 'left' : 'right' }), put: tpPut },
       select: { at: (x, y, add) => { const o = origin(); const r = selectAt(x - o[0], y - o[1], !!add); return r && selInfo(r); }, list: () => S.sel.map(selInfo), count: () => objsList().length, clear: () => { S.sel = []; T.dirty = true; renderPanel(); }, zoom: () => selZoom(), candidates: () => S.cand.map(selInfo) },
       snap: { at: (x, y, px) => { const o = origin(); const rw = (px || 14) / pxPerUnit(); const r = snapAt(x - o[0], y - o[1], rw, false); return r && { x: r.p[0] + o[0], y: r.p[1] + o[1], type: r.type }; }, set: (o) => { Object.assign(SNAP, o); return Object.assign({}, SNAP); }, get: () => Object.assign({}, SNAP) },
       exportPng: () => exportPng(false), downloadPng: () => exportPng(true), openPanel, state: () => ({ tool: T.tool, finds: T.find.res.length, records: T.records.length, views: T.views.length, panel: panelKind })
     };
     app.updateLayerPanel();
+    T.ready = true;
   }
   window.addEventListener('DOMContentLoaded', () => setTimeout(boot, 0));
 })();
