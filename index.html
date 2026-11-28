@@ -1225,13 +1225,23 @@
         const grid = new Map();
         ctx.textBaseline = 'alphabetic';
         for (const t of this.lite.texts) {
-          let fs = t.h * pxPerUnit * (this.textScale || 1);
-          // 너무 작아 읽을 수 없는 것(4px 미만)만 건너뛴다.
-          if (fs < 4) continue;
-          // 확대해도 글자가 끝없이 커지지 않게 화면 크기 상한을 둔다(상한에 걸린 글자끼리 겹치면 뒤의 것은 건너뜀)
-          const capPx = this.textMaxPx || 40;
-          const capped = fs > capPx;
-          if (capped) fs = capPx;
+          const trueFs = t.h * pxPerUnit;                      // 도면 크기 그대로일 때 화면 글자 높이(px)
+          let fs, capped;
+          if (this.textFixed !== false) {
+            // 글자 크기 고정(기본): 확대·축소해도 화면에서 항상 같은 크기. 도면에서 너무 작은 글자(2px 미만)는 더 확대해야 나타나고,
+            // 서로 겹치는 글자는 앞의 것만 남긴다(확대할수록 더 많은 글자가 보임: 지도의 이름표 방식).
+            if (trueFs < 2) continue;
+            fs = (this.textFixedPx || 12) * (this.textScale || 1);
+            capped = true;
+          } else {
+            fs = trueFs * (this.textScale || 1);
+            // 너무 작아 읽을 수 없는 것(4px 미만)만 건너뛴다.
+            if (fs < 4) continue;
+            // 확대해도 글자가 끝없이 커지지 않게 화면 크기 상한을 둔다(상한에 걸린 글자끼리 겹치면 뒤의 것은 건너뜀)
+            const capPx = this.textMaxPx || 40;
+            capped = fs > capPx;
+            if (capped) fs = capPx;
+          }
           const info = this.layers.get(t.layer);
           if (info && !info.visible) continue;
           ctx.globalAlpha = info && info.opacity !== undefined ? info.opacity : 1;   // 도면층 투명도

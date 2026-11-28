@@ -42,6 +42,7 @@
     app.textFont = store.get('font', '"Malgun Gothic", "맑은 고딕"');
     app.textScale = store.get('scale', 1);
     app.textsOn = store.get('textsOn', true);
+    app.textFixed = store.get('fixed', true);                     // 확대해도 글자 크기 고정(기본)
 
     const T = {
       tool: null,                 // null | 'dist' | 'area' | 'coord' | 'zoomwin'
@@ -545,10 +546,12 @@
         const fonts = ['"Malgun Gothic", "맑은 고딕"', 'Gulim, 굴림', 'Batang, 바탕', 'Dotum, 돋움', 'Arial, sans-serif', '"Courier New", monospace'];
         panel.innerHTML = `<h4>글자 표시·글꼴 <button class="btn btn-icon-only" id="pClose" style="border:none;height:22px;width:22px">✕</button></h4>
           <label><input type="checkbox" id="fOn" ${app.textsOn ? 'checked' : ''}>글자 보이기</label>
+          <label><input type="checkbox" id="fFix" ${app.textFixed !== false ? 'checked' : ''}>확대해도 글자 크기 고정 (끄면 도면과 같이 커짐)</label>
           <div>글꼴 <select id="fFont">${fonts.map((f) => `<option value='${f}' ${f === app.textFont ? 'selected' : ''}>${f.split(',')[0].replace(/"/g, '')}</option>`).join('')}</select></div>
           <div>크기 배율 <input type="range" id="fScale" min="50" max="200" step="10" value="${Math.round(app.textScale * 100)}"> <span id="fScaleV">${Math.round(app.textScale * 100)}%</span></div>
           <div class="muted">글자가 "?" 나 네모로 보이면 다른 글꼴로 바꿔 보세요. 도면 글꼴(SHX)은 시스템 글꼴로 대신 그립니다.</div>`;
         $('fOn').onchange = (e) => setFont({ on: e.target.checked });
+        $('fFix').onchange = (e) => setFont({ fixed: e.target.checked });
         $('fFont').onchange = (e) => setFont({ font: e.target.value });
         $('fScale').oninput = (e) => { $('fScaleV').textContent = e.target.value + '%'; setFont({ scale: e.target.value / 100 }); };
       }
@@ -558,7 +561,8 @@
       if (o.font !== undefined) { app.textFont = o.font; store.set('font', o.font); }
       if (o.scale !== undefined) { app.textScale = o.scale; store.set('scale', o.scale); }
       if (o.on !== undefined) { app.textsOn = !!o.on; store.set('textsOn', !!o.on); }
-      app.textsDirty = true; return { font: app.textFont, scale: app.textScale, on: app.textsOn };
+      if (o.fixed !== undefined) { app.textFixed = !!o.fixed; store.set('fixed', !!o.fixed); }
+      app.textsDirty = true; return { font: app.textFont, scale: app.textScale, on: app.textsOn, fixed: app.textFixed };
     }
     function csvText() {
       const o = origin(); const rows = [['번호', '종류', '값', 'ΔX', 'ΔY', '각도', '둘레', 'X', 'Y']];
