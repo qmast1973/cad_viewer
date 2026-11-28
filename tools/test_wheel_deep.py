@@ -81,6 +81,22 @@ async def main():
                         break
             check("휠로 목표 배율까지 확대됨(중간에 멈추지 않음)", ratio >= float(os.environ.get('STOPAT', 500)), f"{ratio:.0f}배, 휠 {k}번")
             cam = json.loads(await ev("JSON.stringify({near:window.cadViewer.app.camera.near,far:window.cadViewer.app.camera.far,d:window.cadViewer.app.camera.position.z})"))
+            # 글자 크기가 도면 확대와 같은 비율로 변하는지(캐드 방식, 기본): 휠 3칸 더 확대하면 글자도 카메라 높이 비율만큼 커져야 함
+            await ev("""(()=>{window.__fs=[];const p=CanvasRenderingContext2D.prototype,o=p.fillText;p.fillText=function(...a){const m=/([\d.]+)px/.exec(this.font);if(m)window.__fs.push(+m[1]);return o.apply(this,a)};return 1})()""")
+            async def med_fs():
+                await ev("window.__fs.length=0; window.cadViewer.app.textsDirty=true")
+                await asyncio.sleep(1.0)
+                return await ev("(()=>{const a=window.__fs.slice().sort((x,y)=>x-y);return a.length?a[Math.floor(a.length/2)]:0})()")
+            z1 = await ev("window.cadViewer.app.camera.position.z"); f1 = await med_fs()
+            for _ in range(3):
+                await send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': int(os.environ.get('WX', 640)), 'y': int(os.environ.get('WY', 400)), 'deltaX': 0, 'deltaY': -100})
+                await asyncio.sleep(0.15)
+            await asyncio.sleep(0.8)
+            z2 = await ev("window.cadViewer.app.camera.position.z"); f2 = await med_fs()
+            if f1 and f2 and f1 < 300 and f2 < 300:
+                check("글자 크기가 확대 비율대로 변함(도면과 같이 커짐)", abs((f2 / f1) / (z1 / z2) - 1) < 0.25, f"글자 {f1:.1f}px → {f2:.1f}px (기대 x{z1 / z2:.2f}), 높이 {z1:.0f} → {z2:.0f}")
+            else:
+                print('  .. 글자 크기 비교 생략(글자 없음 또는 상한 근처)', f1, f2, flush=True)
             st = await ev("document.getElementById('status-scale') && document.getElementById('status-scale').textContent")
             check("상태줄에 확대 정도(축척·배율)가 표시됨", bool(st) and '배' in st, st)
             tz = await ev("window.cadViewer.app.controls.target.z")
