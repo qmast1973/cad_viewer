@@ -32,6 +32,7 @@
   @media (max-width:480px){#sampleSelect{max-width:96px}}
   #tp-info{position:absolute;left:50%;top:58px;transform:translateX(-50%);display:none;max-width:calc(100% - 300px);min-width:150px;padding:6px 12px;border-radius:14px;background:var(--panel-bg);border:1px solid var(--panel-border);color:var(--text-main);font-size:12.5px;line-height:1.35;text-align:center;z-index:14;pointer-events:none;backdrop-filter:blur(8px)}
   @media (max-width:520px){#tp-info{max-width:calc(100% - 24px);top:auto;bottom:118px}}
+  #tp-cur{position:absolute;display:none;width:60px;height:60px;margin:-30px 0 0 -30px;pointer-events:none;z-index:13}
   #tp-loupe{position:absolute;top:60px;display:none;width:132px;height:132px;border-radius:50%;border:3px solid #ffd400;box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:16;background:#101114;pointer-events:none}
   #tp-bar{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);display:none;gap:10px;z-index:15}
   #tp-bar button{white-space:nowrap;height:46px;padding:0 15px;font-size:14.5px;border-radius:23px;border:1px solid var(--panel-border);background:var(--accent-color,#0a84ff);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.4)}
@@ -425,6 +426,13 @@
     const tpBar = document.createElement('div'); tpBar.id = 'tp-bar';
     tpBar.innerHTML = '<button class="sub" id="tpPanelBtn">≡ 설정</button><button class="sub" id="tpUndo">↶ 되돌리기</button><button id="tpDone">■ 측정 완료</button><button id="tpPut">✓ 여기에 찍기</button><button class="sub" id="tpCancel">✕ 취소</button>';
     view.appendChild(tpBar);
+    const tpCur = document.createElement('div'); tpCur.id = 'tp-cur'; view.appendChild(tpCur);
+    function tpCursor() {
+      if (!TP.cross || !touchTool()) { tpCur.style.display = 'none'; return; }
+      const col = TP.snap ? '#2bff7a' : '#ffffff';
+      tpCur.style.left = (canvas.offsetLeft + TP.cross.x) + 'px'; tpCur.style.top = (canvas.offsetTop + TP.cross.y) + 'px'; tpCur.style.display = 'block';
+      tpCur.innerHTML = `<svg width="60" height="60" viewBox="0 0 60 60" fill="none" stroke="${col}" stroke-width="1.6" style="filter:drop-shadow(0 0 2px #000)"><path d="M4 30H23M37 30H56M30 4V23M30 37V56"/><circle cx="30" cy="30" r="7"/></svg>`;
+    }
     const tpInfo = document.createElement('div'); tpInfo.id = 'tp-info'; view.appendChild(tpInfo);
     // 돋보기: 손가락이 십자선을 가려도 보이게, 십자선 둘레를 3배로 확대해 반대편 위쪽 모서리에 보여 준다.
     const loupe = document.createElement('canvas'); loupe.id = 'tp-loupe'; view.appendChild(loupe);
@@ -490,7 +498,7 @@
       const txt = (touchTool() && TP.coarse && !TP.showPanel) ? tpInfoText() : '';
       tpInfo.textContent = txt; tpInfo.style.display = txt ? 'block' : 'none';
     }
-    function tpClear() { T.hover = null; TP.cross = null; TP.snap = null; snapMark = null; tpShow(); loupe.style.display = 'none'; T.dirty = true; }
+    function tpClear() { T.hover = null; TP.cross = null; if (typeof tpCursor === 'function') tpCursor(); TP.snap = null; snapMark = null; tpShow(); loupe.style.display = 'none'; T.dirty = true; }
     /* 이미 찍은 점(진행 중인 점 + 기록된 측정의 점)을 옮길 수 있게: 십자선이 점 위에 올라가 있으면 그 점을 '잡는다'. */
     function tpHandles() {
       const h = [];
@@ -522,7 +530,7 @@
       TP.snap = q.snapped ? { p: q.p, type: q.type } : null; TP.pt = q.p; snapMark = TP.snap;
       if (T.tool === 'edit' && E.step === 'target') E.hover = q.p; else if (['dist', 'path', 'area'].includes(T.tool) && T.pts.length) T.hover = q.p;
       if (TP.grab) { TP.grab.p[0] = q.p[0]; TP.grab.p[1] = q.p[1]; tpRecompute(TP.grab.rec); }
-      T.dirty = true; tpShow(); tpLoupe();
+      T.dirty = true; tpShow(); tpLoupe(); tpCursor();
     }
     function tpPut() {
       if (!TP.cross || !touchTool()) return;
