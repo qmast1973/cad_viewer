@@ -28,6 +28,12 @@
   .layer-extra{display:flex;align-items:center;gap:4px;margin-left:auto}
   .layer-extra input[type=range]{width:54px}
   .layer-extra button{border:1px solid var(--panel-border);background:var(--btn-bg);color:var(--text-main);border-radius:4px;font-size:10px;height:20px;padding:0 4px;cursor:pointer}
+  #installBtn{white-space:nowrap;flex-shrink:0;padding:0 10px;font-size:12px}
+  @media (max-width:480px){#sampleSelect{max-width:96px}}
+  #tp-loupe{position:absolute;top:60px;display:none;width:132px;height:132px;border-radius:50%;border:3px solid #ffd400;box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:16;background:#101114;pointer-events:none}
+  #tp-bar{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);display:none;gap:10px;z-index:15}
+  #tp-bar button{height:46px;padding:0 20px;font-size:15px;border-radius:23px;border:1px solid var(--panel-border);background:var(--accent-color,#0a84ff);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+  #tp-bar button.sub{background:var(--panel-bg);color:var(--text-main)}
   @media (max-width:640px){#cad-panel{left:60px;width:calc(100% - 72px)}}`;
 
   function boot() {
@@ -263,9 +269,9 @@
     }
     const totalVerts = () => (app.lite ? app.lite.lines.reduce((n, l) => n + l.obj.geometry.attributes.position.count * (l.inst ? l.inst.n : 1), 0) : 0);
 
-    function pickPoint(px, py, forceSnap) {
+    function pickPoint(px, py, forceSnap, radiusPx) {
       const [wx, wy] = s2w(px, py);
-      const rw = 14 / pxPerUnit();
+      const rw = (radiusPx || 14) / pxPerUnit();
       const big = totalVerts() >= 8e6;
       const r = (forceSnap || !big) ? snapAt(wx, wy, rw, !forceSnap) : null;
       return { p: r ? r.p : [wx, wy], snapped: !!r, type: r ? r.type : null };
@@ -277,10 +283,10 @@
       else toast('점이 3개 이상 필요합니다');
       T.pts = []; T.hover = null; T.dirty = true;
     }
-    function onClick(px, py, shift) {
+    function onClick(px, py, shift, forced) {
       if (!T.tool || !isLite()) return;
       if (T.tool === 'sel') { const [wx, wy] = s2w(px, py); selectAt(wx, wy, !!shift); return; }
-      const { p } = pickPoint(px, py, true);
+      const p = forced || pickPoint(px, py, true).p;
       if (T.tool === 'edit') { editClick(p); T.dirty = true; return; }
       if (T.tool === 'dist') {
         T.pts.push(p);
@@ -401,15 +407,83 @@
 
     // ── 입력 연결 ──
     const canvas = app.renderer.domElement;
+    // ── 터치(폰) 측정: 손가락으로 끌어도 화면이 같이 움직이지 않게, 한 손가락은 '십자선'만 옮기고(손가락 위쪽 70px) 끝점·중점·교차에 붙는 것을
+    //    보여 준 뒤 [점 찍기] 를 눌러 확정한다. 화면 이동·확대는 두 손가락. 마우스는 예전처럼 누르면 바로 찍힘. ──
+    let snapMark = null, lastSnapT = 0;
+    const TOUCH_TOOLS = ['dist', 'area', 'coord', 'edit'];
+    const TP = { cross: null, snap: null, fingers: new Set(), down: false, last: 0 };
+    const TP_OFFSET = 70;
+    const tpBar = document.createElement('div'); tpBar.id = 'tp-bar';
+    tpBar.innerHTML = '<button id="tpPut">✓ 점 찍기</button><button class="sub" id="tpCancel">✕ 취소</button>';
+    view.appendChild(tpBar);
+    // 돋보기: 손가락이 십자선을 가려도 보이게, 십자선 둘레를 3배로 확대해 반대편 위쪽 모서리에 보여 준다.
+    const loupe = document.createElement('canvas'); loupe.id = 'tp-loupe'; view.appendChild(loupe);
+    const LOUPE = { size: 132, zoom: 3 };
+    function tpLoupe() {
+      if (!TP.cross || !touchTool()) { loupe.style.display = 'none'; return; }
+      const { W } = size(); const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const left = TP.cross.x > W / 2;                                   // 십자선이 오른쪽이면 돋보기는 왼쪽 위, 왼쪽이면 오른쪽 위
+      loupe.style.left = left ? '12px' : 'auto'; loupe.style.right = left ? 'auto' : '12px'; loupe.style.display = 'block';
+      const px = Math.round(LOUPE.size * dpr);
+      if (loupe.width !== px) { loupe.width = px; loupe.height = px; }
+      const g = loupe.getContext('2d'); g.fillStyle = '#101114'; g.fillRect(0, 0, px, px);
+      const src = LOUPE.size / LOUPE.zoom, sx = TP.cross.x - src / 2, sy = TP.cross.y - src / 2;
+      try {
+        app.renderer.render(app.scene, app.camera);                      // 바로 이어서 복사하면 그려 둔 화면이 남아 있다
+        const gl = app.renderer.domElement, rr = gl.width / Math.max(1, size().W);
+        g.imageSmoothingEnabled = true;
+        g.drawImage(gl, sx * rr, sy * rr, src * rr, src * rr, 0, 0, px, px);
+        const tx = app.textOverlay; if (tx && tx.width) { const tr = tx.width / Math.max(1, size().W); g.drawImage(tx, sx * tr, sy * tr, src * tr, src * tr, 0, 0, px, px); }
+        if (cv.width) { const cr = cv.width / Math.max(1, size().W); g.drawImage(cv, sx * cr, sy * cr, src * cr, src * cr, 0, 0, px, px); }
+      } catch (e) { /* 복사 실패(그래픽 환경)는 건너뜀 */ }
+      const c = px / 2, col = TP.snap ? '#2bff7a' : '#ffffff';
+      g.strokeStyle = col; g.lineWidth = 2 * dpr; g.beginPath();
+      g.moveTo(c - 26 * dpr, c); g.lineTo(c - 7 * dpr, c); g.moveTo(c + 7 * dpr, c); g.lineTo(c + 26 * dpr, c); g.moveTo(c, c - 26 * dpr); g.lineTo(c, c - 7 * dpr); g.moveTo(c, c + 7 * dpr); g.lineTo(c, c + 26 * dpr); g.stroke();
+      if (TP.snap) { g.strokeRect(c - 8 * dpr, c - 8 * dpr, 16 * dpr, 16 * dpr); }
+    }
+    const touchTool = () => TOUCH_TOOLS.includes(T.tool) && isLite();
+    function updateTouchMode() {               // 도구가 켜져 있으면 한 손가락 이동을 끈다(두 손가락 이동·확대는 그대로)
+      const active = ['dist', 'area', 'coord', 'edit', 'sel'].includes(T.tool) && isLite();
+      app.controls.touches.ONE = active ? -1 : (app.is2DMode ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE);
+    }
+    function tpShow() { const on = TP.cross && touchTool(); tpBar.style.display = on ? 'flex' : 'none'; panel.style.visibility = on ? 'hidden' : ''; }       // 조준하는 동안은 패널을 숨겨 화면과 단추를 가리지 않게
+    function tpClear() { TP.cross = null; TP.snap = null; snapMark = null; tpShow(); loupe.style.display = 'none'; T.dirty = true; }
+    function tpMove(e) {
+      const r = canvas.getBoundingClientRect();
+      const x = e.clientX - r.left, y = Math.max(0, e.clientY - r.top - TP_OFFSET);
+      TP.cross = { x, y };
+      const q = pickPoint(x, y, false, 24);
+      TP.snap = q.snapped ? { p: q.p, type: q.type } : null; TP.pt = q.p; snapMark = TP.snap;
+      if (T.tool === 'edit' && E.step === 'target') E.hover = q.p; else if (['dist', 'area'].includes(T.tool) && T.pts.length) T.hover = q.p;
+      T.dirty = true; tpShow(); tpLoupe();
+    }
+    function tpPut() {
+      if (!TP.cross || !touchTool()) return;
+      const { x, y } = TP.cross, pt = TP.pt; tpClear(); onClick(x, y, false, pt);
+    }
+    canvas.addEventListener('pointerdown', (e) => {                      // 캡처 단계: OrbitControls 가 받기 전에 한 손가락 이동을 끈다
+      updateTouchMode();
+      if (e.pointerType !== 'touch' || !touchTool()) return;
+      TP.fingers.add(e.pointerId);
+      if (TP.fingers.size === 1) { TP.down = true; tpMove(e); } else { TP.down = false; }          // 두 손가락이면 이동·확대
+    }, true);
+    canvas.addEventListener('pointermove', (e) => {
+      if (e.pointerType !== 'touch' || !touchTool() || !TP.down || TP.fingers.size !== 1) return;
+      const nw = performance.now(); if (nw - TP.last < 40) return; TP.last = nw; tpMove(e);
+    });
+    const tpEnd = (e) => { if (e.pointerType !== 'touch') return; TP.fingers.delete(e.pointerId); if (TP.fingers.size === 0) { TP.down = false; if (TP.cross && touchTool()) tpMove({ clientX: TP.cross.x + canvas.getBoundingClientRect().left, clientY: TP.cross.y + TP_OFFSET + canvas.getBoundingClientRect().top }); } };
+    canvas.addEventListener('pointerup', tpEnd); canvas.addEventListener('pointercancel', tpEnd);
+    $('tpPut').addEventListener('click', tpPut); $('tpCancel').addEventListener('click', tpClear);
     let down = null, lastHover = 0, zw = null;
     canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, id: e.pointerId, t: e.button }; });
     canvas.addEventListener('pointerup', (e) => {
       if (!down || e.pointerId !== down.id) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); const btn = down.t; down = null;
+      if (e.pointerType === 'touch' && TOUCH_TOOLS.includes(T.tool)) return;                    // 터치 측정은 십자선 + [점 찍기]
       if (moved < 6 && btn === 0 && ['dist', 'area', 'coord', 'edit', 'sel'].includes(T.tool)) { const r = canvas.getBoundingClientRect(); onClick(e.clientX - r.left, e.clientY - r.top, e.shiftKey); }
     });
-    let snapMark = null, lastSnapT = 0;
     canvas.addEventListener('pointermove', (e) => {         // 스냅 표식(측정·면적·좌표·편집 도구가 켜져 있을 때)
+      if (e.pointerType === 'touch') return;
       if (!['dist', 'area', 'coord', 'edit'].includes(T.tool) || !isLite()) { if (snapMark) { snapMark = null; T.dirty = true; } return; }
       const nw = performance.now(); if (nw - lastSnapT < 70) return; lastSnapT = nw;
       const rr = canvas.getBoundingClientRect(); const r = pickPoint(e.clientX - rr.left, e.clientY - rr.top, false);
@@ -519,6 +593,11 @@
           if (S.sel.length < 20) label(ctx, ax + w / 2, ay - 4, o.n);
         }
       }
+      if (TP.cross && touchTool()) {                                                          // 터치 십자선(손가락 위쪽)
+        const { x, y } = TP.cross; ctx.strokeStyle = TP.snap ? '#2bff7a' : '#ffffff'; ctx.lineWidth = 1.5; ctx.beginPath();
+        ctx.moveTo(x - 26, y); ctx.lineTo(x - 7, y); ctx.moveTo(x + 7, y); ctx.lineTo(x + 26, y); ctx.moveTo(x, y - 26); ctx.lineTo(x, y - 7); ctx.moveTo(x, y + 7); ctx.lineTo(x, y + 26); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
+      }
       if (snapMark && ['dist', 'area', 'coord', 'edit'].includes(T.tool)) {                  // 스냅 표식: 끝점 □ · 중점 △ · 교차 ×
         const [sx, sy] = w2s(snapMark.p[0], snapMark.p[1]); const col = { end: '#2bff7a', mid: '#2bd8ff', int: '#ff4df0' }[snapMark.type];
         ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
@@ -593,7 +672,7 @@
 
     function setTool(t) {
       if (t && !isLite() && t !== 'prev' && t !== 'png') { toast('큰 도면(DWG·DXF) 모드에서 쓸 수 있습니다'); return; }
-      T.tool = (T.tool === t) ? null : t; T.pts = []; T.hover = null; T.dirty = true;
+      T.tool = (T.tool === t) ? null : t; T.pts = []; T.hover = null; T.dirty = true; tpClear(); updateTouchMode();
       Object.keys(btns).forEach((k) => btns[k].classList.toggle('active', k === T.tool || (k === panelKind && panel.classList.contains('open'))));
       canvas.style.cursor = T.tool ? 'crosshair' : '';
       if (['dist', 'area', 'coord'].includes(T.tool)) { panelKind = 'measure'; panel.classList.add('open'); }
@@ -799,6 +878,8 @@
       edit: { open: editOpen, pick: async (x, y) => { const s = await editPick([x, y]); return s && { handle: s.handle, name: s.name, layer: s.layer, bbox: s.bbox }; }, move: (dx, dy) => editApply('move', dx, dy), copy: (dx, dy) => editApply('copy', dx, dy), undo: editUndo, save: editSave,
         ops: () => E.ops.map((o) => ({ op: o.op, handle: o.handle, name: o.name, dx: o.dx, dy: o.dy })), state: () => ({ ready: E.ready, busy: E.busy, step: E.step, op: E.op, selected: E.sel && E.sel.name, ops: E.ops.length, saved: E.saved, msg: E.msg }), clearSel: () => { E.sel = null; T.dirty = true; } },
       command: (t) => runCmd(t),
+      view: { toScreen: (x, y) => { const o = origin(); const [sx, sy] = w2s(x - o[0], y - o[1]); const r = canvas.getBoundingClientRect(); return [sx + r.left, sy + r.top]; } },
+      touch: { state: () => ({ cross: TP.cross, snap: TP.snap && TP.snap.type, bar: tpBar.style.display, one: app.controls.touches.ONE, loupe: loupe.style.display, loupeSide: loupe.style.left === '12px' ? 'left' : 'right' }), put: tpPut },
       select: { at: (x, y, add) => { const o = origin(); const r = selectAt(x - o[0], y - o[1], !!add); return r && selInfo(r); }, list: () => S.sel.map(selInfo), count: () => objsList().length, clear: () => { S.sel = []; T.dirty = true; renderPanel(); }, zoom: () => selZoom(), candidates: () => S.cand.map(selInfo) },
       snap: { at: (x, y, px) => { const o = origin(); const rw = (px || 14) / pxPerUnit(); const r = snapAt(x - o[0], y - o[1], rw, false); return r && { x: r.p[0] + o[0], y: r.p[1] + o[1], type: r.type }; }, set: (o) => { Object.assign(SNAP, o); return Object.assign({}, SNAP); }, get: () => Object.assign({}, SNAP) },
       exportPng: () => exportPng(false), downloadPng: () => exportPng(true), openPanel, state: () => ({ tool: T.tool, finds: T.find.res.length, records: T.records.length, views: T.views.length, panel: panelKind })
